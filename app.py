@@ -2,20 +2,21 @@ import sqlite3
 import asyncio
 import time
 import os
+import threading
 from datetime import datetime, timedelta
 from flask import Flask
-from threading import Thread
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
 from aiogram.exceptions import TelegramBadRequest
 
-# --- ЗАГЛУШКА ДЛЯ KOYEB (чтобы сервер не засыпал) ---
+# --- ЗАГЛУШКА ДЛЯ RENDER (чтобы сервер не засыпал) ---
 app = Flask('')
 @app.route('/')
 def home(): return "Bot is running!"
-def run(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-def keep_alive(): Thread(target=run).start()
+
+def keep_alive(): 
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
 # --- ОСНОВНОЙ КОД БОТА ---
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -202,5 +203,7 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    keep_alive()
+    # Запускаем Flask в отдельном потоке, чтобы он не блокировал бота
+    threading.Thread(target=keep_alive, daemon=True).start()
+    # Запускаем бота
     asyncio.run(main())
