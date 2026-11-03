@@ -90,10 +90,11 @@ async def check_achievements(user_id, balance, pickaxe_level, chat_id, message_o
     conn.commit()
     conn.close()
     if new_achievements:
-        text = "🎉 **Новое достижение!**\n\n" + "\n".join(new_achievements)
-        await message_obj.answer(text, parse_mode="Markdown")
+        text = "🎉 Новое достижение!\n\n" + "\n".join(new_achievements)
+        await message_obj.answer(text)
 
-@dp.message(Command("start"))
+# ВАЖНО: ignore_mention=True позволяет боту реагировать на /start в группах без @упоминания
+@dp.message(Command("start", ignore_mention=True))
 async def cmd_start(message: types.Message):
     try:
         user_id = message.from_user.id
@@ -120,8 +121,10 @@ async def cmd_start(message: types.Message):
             cursor.execute("INSERT INTO chats (chat_id, chat_title) VALUES (?, ?)", (chat_id, chat_title))
         conn.commit()
         conn.close()
-        caption = f"⛏️ **Привет, {username}!**\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 **Твой баланс:** {balance} руды\n🛠 **Твоя кирка:** {level} ур.\n\nЖми «Копать», чтобы добывать руду!"
-        await message.reply(caption, parse_mode="Markdown", reply_markup=get_game_keyboard(level))
+        
+        # Убрали parse_mode="Markdown", чтобы не было ошибок с символами
+        caption = f"⛏️ Привет, {username}!\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 Твой баланс: {balance} руды\n🛠 Твоя кирка: {level} ур.\n\nЖми «Копать», чтобы добывать руду!"
+        await message.reply(caption, reply_markup=get_game_keyboard(level))
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
@@ -157,8 +160,10 @@ async def handle_buttons(callback: types.CallbackQuery):
                 cursor.execute("UPDATE chats SET total_balance = total_balance + ? WHERE chat_id = ?", (mined, chat_id))
             conn.commit()
             await check_achievements(user_id, new_balance, pickaxe_level, chat_id, callback.message)
-            lvl_text = f"\n\n🎉 **Новый уровень!**" if get_player_level(new_total) > get_player_level(total_mined) else ""
-            await callback.message.edit_text(f"⛏️ {callback.from_user.first_name} накопал {mined} руды!\nБаланс: {new_balance}{lvl_text}", parse_mode="Markdown", reply_markup=get_game_keyboard(pickaxe_level))
+            lvl_text = f"\n\n🎉 Новый уровень!" if get_player_level(new_total) > get_player_level(total_mined) else ""
+            
+            # Без Markdown
+            await callback.message.edit_text(f"⛏️ {callback.from_user.first_name} накопал {mined} руды!\nБаланс: {new_balance}{lvl_text}", reply_markup=get_game_keyboard(pickaxe_level))
         elif action == "upgrade":
             cost = get_upgrade_cost(pickaxe_level)
             if balance >= cost:
@@ -168,7 +173,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                 await callback.message.edit_text(f"🛒 Кирка улучшена до {pickaxe_level + 1} ур.!", reply_markup=get_game_keyboard(pickaxe_level + 1))
             else: await callback.answer(f"Нужно {cost} руды!", show_alert=True)
         elif action == "profile":
-            await callback.message.answer(f"👤 **Профиль:** {callback.from_user.first_name}\n🎖 Статус: {current_status}\n🏆 Уровень: {get_player_level(total_mined)}\n💰 Баланс: {balance}\n🛠 Кирка: {pickaxe_level}", parse_mode="Markdown")
+            await callback.message.answer(f"👤 Профиль: {callback.from_user.first_name}\n🎖 Статус: {current_status}\n🏆 Уровень: {get_player_level(total_mined)}\n💰 Баланс: {balance}\n🛠 Кирка: {pickaxe_level}")
         elif action == "top_players":
             cursor.execute("SELECT username, balance FROM players ORDER BY balance DESC LIMIT 5")
             text = "🏆 Топ игроков:\n" + "\n".join([f"{i}. @{n} — {b} руды" for i, (n, b) in enumerate(cursor.fetchall(), 1)])
@@ -193,7 +198,7 @@ async def handle_buttons(callback: types.CallbackQuery):
 
 # --- ЗАПУСК СЕРВЕРА ДЛЯ RENDER ---
 async def main():
-    init_db()  # <--- Вот она, та самая функция, которую он не видел
+    init_db()
     print("Бот запущен!")
     
     await bot.set_webhook(WEBHOOK_URL)
