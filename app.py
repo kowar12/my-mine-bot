@@ -447,6 +447,34 @@ async def cmd_promo(message: types.Message):
         await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
         await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
 
+# --- АДМИН СТАТИСТИКА ---
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    ADMIN_ID = 6564750882
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("У тебя нет прав для этой команды.")
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            players_count = await conn.fetchval("SELECT COUNT(*) FROM players")
+            chats_count = await conn.fetchval("SELECT COUNT(*) FROM chats")
+            total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM players")
+            total_mined_all = await conn.fetchval("SELECT COALESCE(SUM(total_mined), 0) FROM players")
+
+        text = (
+            f"📊 **Статистика «Шахты»**\n\n"
+            f"👥 Всего игроков: {players_count}\n"
+            f"🏰 Всего чатов: {chats_count}\n"
+            f"💰 Общий баланс игроков: {total_balance} монет\n"
+            f"⛏️ Всего добыто: {total_mined_all} монет\n\n"
+            f"*Данные актуальны на текущий момент.*"
+        )
+        await message.reply(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        await message.reply(f"Ошибка при получении статистики: {e}")
+
 # --- ЗАПУСК ---
 async def main():
     await init_db()
