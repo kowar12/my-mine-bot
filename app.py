@@ -6,7 +6,7 @@ import asyncpg
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions, FSInputFile
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
@@ -21,21 +21,21 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
-# --- СПИСОК РУД ---
+# --- СПИСОК РУД (Использованы твои названия файлов) ---
 ORES = [
-    {"name": "Обычная руда", "chance": 60, "reward": 10, "emoji": "🪨"},
-    {"name": "Уголь", "chance": 25, "reward": 25, "emoji": "🪵"},
-    {"name": "Золото", "chance": 10, "reward": 60, "emoji": "🥇"},
-    {"name": "Алмаз", "chance": 4, "reward": 150, "emoji": "💎"},
-    {"name": "Супер руда", "chance": 1, "reward": 500, "emoji": "🔮"}
+    {"name": "Обычная руда", "chance": 60, "reward": 10, "emoji": "🪨", "img": "ore_cammon.jpg"},
+    {"name": "Уголь", "chance": 25, "reward": 25, "emoji": "🪵", "img": "ore_coal.jpg"},
+    {"name": "Золото", "chance": 10, "reward": 60, "emoji": "🥇", "img": "ore_gold.jpg"},
+    {"name": "Алмаз", "chance": 4, "reward": 150, "emoji": "💎", "img": "ore_daimmond.jpg"},
+    {"name": "Супер руда", "chance": 1, "reward": 500, "emoji": "🔮", "img": "ore_super.jpg"}
 ]
 
-# --- СПИСОК КИРОК ---
+# --- СПИСОК КИРОК (Добавлены картинки) ---
 PICKAXES = {
-    "wood": {"name": "Деревянная", "base_mult": 1, "price": 0, "emoji": "🪵"},
-    "stone": {"name": "Каменная", "base_mult": 2, "price": 5000, "emoji": "🪨"},
-    "gold": {"name": "Золотая", "base_mult": 3, "price": 20000, "emoji": "🥇"},
-    "diamond": {"name": "Алмазная", "base_mult": 5, "price": 100000, "emoji": "💎"}
+    "wood": {"name": "Деревянная", "base_mult": 1, "price": 0, "emoji": "🪵", "img": "pick_wood.jpg"},
+    "stone": {"name": "Каменная", "base_mult": 2, "price": 5000, "emoji": "🪨", "img": "pick_stone.jpg"},
+    "gold": {"name": "Золотая", "base_mult": 3, "price": 20000, "emoji": "🥇", "img": "pick_gold.jpg"},
+    "diamond": {"name": "Алмазная", "base_mult": 5, "price": 100000, "emoji": "💎", "img": "pick_diamond.jpg"}
 }
 
 # --- БАЗА ДАННЫХ ---
@@ -146,7 +146,13 @@ async def cmd_start(message: types.Message):
         
         level = get_player_level(total_mined)
         caption = f"⛏️ Привет, {username}!\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 Твой баланс: {balance} монет\n🏆 Твой уровень: {level}\n\nЖми «Копать», чтобы добывать руду!"
-        await message.reply(caption, reply_markup=get_game_keyboard())
+        
+        try:
+            photo = FSInputFile("start.jpg")
+            await message.answer_photo(photo=photo, caption=caption, reply_markup=get_game_keyboard())
+        except Exception:
+            await message.reply(caption, reply_markup=get_game_keyboard())
+            
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
@@ -178,7 +184,6 @@ async def handle_buttons(callback: types.CallbackQuery):
             await conn.execute("UPDATE players SET balance = $1, last_seen = $2 WHERE user_id = $3", balance, current_time, user_id)
 
             if action == "mine":
-                # КУЛДАУН 15 МИНУТ (900 секунд)
                 if current_time - last_mine_time < 900:
                     wait_sec = round(900 - (current_time - last_mine_time), 1)
                     await callback.answer(f"⏳ Шахта остывает! Подожди {wait_sec // 60} мин. {wait_sec % 60} сек.", show_alert=True)
@@ -193,24 +198,30 @@ async def handle_buttons(callback: types.CallbackQuery):
                 new_balance = balance + mined
                 new_total = total_mined + mined
                 
-                # Обновляем last_mine_time
                 await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3 WHERE user_id = $4", new_balance, current_time, new_total, user_id)
                 if chat_id < 0:
                     await conn.execute("UPDATE chats SET total_balance = total_balance + $1 WHERE chat_id = $2", mined, chat_id)
                 
                 await check_achievements(user_id, new_balance, new_total, chat_id, callback.message)
                 
-                await callback.message.edit_text(
+                text = (
                     f"⛏️ {callback.from_user.first_name} накопал: {ore['emoji']} {ore['name']}!\n"
                     f"💰 Получено: {mined} монет (x{total_mult})\n"
                     f"💳 Баланс: {new_balance}\n\n"
-                    f"⏳ Следующая копка через 15 минут.", 
-                    reply_markup=get_game_keyboard()
+                    f"⏳ Следующая копка через 15 минут."
                 )
+                
+                try:
+                    photo = FSInputFile(ore["img"])
+                    await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
+                    await callback.message.delete()
+                except Exception:
+                    await callback.message.edit_text(text, reply_markup=get_game_keyboard())
             
-            # ... (остальной код для инвентаря, улучшения, профиля и т.д. остается без изменений) ...
             elif action == "inventory":
-                text = "🎒 Твой инвентарь:\n\n"
+                p_data = PICKAXES[active_pickaxe]
+                text = f"🎒 Твой инвентарь:\n\nСейчас в руках: {p_data['emoji']} {p_data['name']}\n\nВыбери кирку для копки или купи новую:"
+                
                 buttons = []
                 for p_id, p_data in PICKAXES.items():
                     if p_id in owned_pickaxes:
@@ -221,14 +232,20 @@ async def handle_buttons(callback: types.CallbackQuery):
                             buttons.append([InlineKeyboardButton(text=f"🛒 Купить {p_data['name']} за {p_data['price']}", callback_data=f"buy_{p_id}")])
                 
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                
+                try:
+                    photo = FSInputFile(PICKAXES[active_pickaxe]["img"])
+                    await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                    await callback.message.delete()
+                except Exception:
+                    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action.startswith("equip_"):
                 new_pickaxe = action.split("_")[1]
                 if new_pickaxe in owned_pickaxes:
                     await conn.execute("UPDATE players SET active_pickaxe = $1 WHERE user_id = $2", new_pickaxe, user_id)
                     await callback.answer(f"Ты экипировал {PICKAXES[new_pickaxe]['name']} кирку!")
-                    await callback.message.edit_text("🎒 Инвентарь обновлен. Жми копать!", reply_markup=get_game_keyboard())
+                    await handle_buttons(callback)
                 else:
                     await callback.answer("У тебя нет этой кирки!")
 
@@ -239,8 +256,14 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_balance = balance - price
                     new_owned = player['owned_pickaxes'] + f",{pickaxe_id}"
                     await conn.execute("UPDATE players SET balance = $1, owned_pickaxes = $2 WHERE user_id = $3", new_balance, new_owned, user_id)
-                    await callback.answer(f"Ты купил {PICKAXES[pickaxe_id]['name']} кирку!", show_alert=True)
-                    await handle_buttons(callback)
+                    
+                    text = f"🎉 Ты купил {PICKAXES[pickaxe_id]['name']} кирку!\n\nТеперь она в твоем инвентаре."
+                    try:
+                        photo = FSInputFile(PICKAXES[pickaxe_id]["img"])
+                        await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
+                        await callback.message.delete()
+                    except Exception:
+                        await callback.message.edit_text(text, reply_markup=get_game_keyboard())
                 else:
                     await callback.answer(f"Нужно {price} монет!", show_alert=True)
 
