@@ -21,7 +21,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
-# --- СПИСОК РУД (Использованы твои названия файлов) ---
+# --- СПИСОК РУД ---
 ORES = [
     {"name": "Обычная руда", "chance": 60, "reward": 10, "emoji": "🪨", "img": "ore_cammon.jpg"},
     {"name": "Уголь", "chance": 25, "reward": 25, "emoji": "🪵", "img": "ore_coal.jpg"},
@@ -30,7 +30,7 @@ ORES = [
     {"name": "Супер руда", "chance": 1, "reward": 500, "emoji": "🔮", "img": "ore_super.jpg"}
 ]
 
-# --- СПИСОК КИРОК (Добавлены картинки) ---
+# --- СПИСОК КИРОК ---
 PICKAXES = {
     "wood": {"name": "Деревянная", "base_mult": 1, "price": 0, "emoji": "🪵", "img": "pick_wood.jpg"},
     "stone": {"name": "Каменная", "base_mult": 2, "price": 5000, "emoji": "🪨", "img": "pick_stone.jpg"},
@@ -51,12 +51,14 @@ async def init_db():
                 last_bonus_time DOUBLE PRECISION DEFAULT 0,
                 last_sub_bonus_time DOUBLE PRECISION DEFAULT 0, last_mine_time DOUBLE PRECISION DEFAULT 0,
                 last_seen DOUBLE PRECISION DEFAULT 0, total_mined INTEGER DEFAULT 0,
-                current_status TEXT DEFAULT 'Новичок'
+                current_status TEXT DEFAULT 'Новичок', used_promo BOOLEAN DEFAULT FALSE
             )
         """)
         for col in ["active_pickaxe", "pickaxe_levels", "owned_pickaxes"]:
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             except asyncpg.exceptions.DuplicateColumnError: pass
+        try: await conn.execute("ALTER TABLE players ADD COLUMN used_promo BOOLEAN DEFAULT FALSE")
+        except asyncpg.exceptions.DuplicateColumnError: pass
         
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS achievements (user_id BIGINT, ach_name TEXT, PRIMARY KEY (user_id, ach_name))")
@@ -184,8 +186,9 @@ async def handle_buttons(callback: types.CallbackQuery):
             await conn.execute("UPDATE players SET balance = $1, last_seen = $2 WHERE user_id = $3", balance, current_time, user_id)
 
             if action == "mine":
-                if current_time - last_mine_time < 900:
-                    wait_sec = round(900 - (current_time - last_mine_time), 1)
+                # КУЛДАУН 5 МИНУТ (300 секунд)
+                if current_time - last_mine_time < 300:
+                    wait_sec = round(300 - (current_time - last_mine_time), 1)
                     await callback.answer(f"⏳ Шахта остывает! Подожди {wait_sec // 60} мин. {wait_sec % 60} сек.", show_alert=True)
                     return
                 
@@ -208,7 +211,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     f"⛏️ {callback.from_user.first_name} накопал: {ore['emoji']} {ore['name']}!\n"
                     f"💰 Получено: {mined} монет (x{total_mult})\n"
                     f"💳 Баланс: {new_balance}\n\n"
-                    f"⏳ Следующая копка через 15 минут."
+                    f"⏳ Следующая копка через 5 минут."
                 )
                 
                 try:
@@ -236,16 +239,15 @@ async def handle_buttons(callback: types.CallbackQuery):
                 try:
                     photo = FSInputFile(PICKAXES[active_pickaxe]["img"])
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-                    await callback.message.delete()
                 except Exception:
-                    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action.startswith("equip_"):
                 new_pickaxe = action.split("_")[1]
                 if new_pickaxe in owned_pickaxes:
                     await conn.execute("UPDATE players SET active_pickaxe = $1 WHERE user_id = $2", new_pickaxe, user_id)
                     await callback.answer(f"Ты экипировал {PICKAXES[new_pickaxe]['name']} кирку!")
-                    await handle_buttons(callback)
+                    await callback.message.answer("🎒 Инвентарь обновлен. Жми копать!", reply_markup=get_game_keyboard())
                 else:
                     await callback.answer("У тебя нет этой кирки!")
 
@@ -261,9 +263,8 @@ async def handle_buttons(callback: types.CallbackQuery):
                     try:
                         photo = FSInputFile(PICKAXES[pickaxe_id]["img"])
                         await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
-                        await callback.message.delete()
                     except Exception:
-                        await callback.message.edit_text(text, reply_markup=get_game_keyboard())
+                        await callback.message.answer(text, reply_markup=get_game_keyboard())
                 else:
                     await callback.answer(f"Нужно {price} монет!", show_alert=True)
 
@@ -276,7 +277,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     [InlineKeyboardButton(text=f"Улучшить за {cost}", callback_data="do_upgrade")],
                     [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
                 ])
-                await callback.message.edit_text(text, reply_markup=kb)
+                await callback.message.answer(text, reply_markup=kb)
 
             elif action == "do_upgrade":
                 p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
@@ -286,12 +287,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_levels = update_pickaxe_level(pickaxe_levels, active_pickaxe, p_lvl + 1)
                     await conn.execute("UPDATE players SET balance = $1, pickaxe_levels = $2 WHERE user_id = $3", new_balance, new_levels, user_id)
                     await callback.answer(f"Кирка улучшена до {p_lvl + 1} уровня!", show_alert=True)
-                    await handle_buttons(callback)
+                    await callback.message.answer("Кирка улучшена! Жми копать.", reply_markup=get_game_keyboard())
                 else:
                     await callback.answer(f"Нужно {cost} монет!", show_alert=True)
 
             elif action == "back_to_menu":
-                await callback.message.edit_text("Главное меню:", reply_markup=get_game_keyboard())
+                await callback.message.answer("Главное меню:", reply_markup=get_game_keyboard())
 
             elif action == "profile":
                 level = get_player_level(total_mined)
@@ -311,11 +312,16 @@ async def handle_buttons(callback: types.CallbackQuery):
                 await callback.message.answer(text)
             
             elif action == "bonus":
+                # Проверяем, прошло ли 24 часа (86400 секунд)
                 if current_time - last_bonus_time < 86400: 
-                    await callback.answer("Приходи завтра!", show_alert=True)
+                    # Считаем, сколько осталось
+                    wait_sec = 86400 - (current_time - last_bonus_time)
+                    hours = int(wait_sec // 3600)
+                    minutes = int((wait_sec % 3600) // 60)
+                    await callback.answer(f"🎁 Ты уже забирал ежедневный бонус!\nПриходи через {hours} ч. {minutes} мин.", show_alert=True)
                 else:
                     await conn.execute("UPDATE players SET balance = $1, last_bonus_time = $2 WHERE user_id = $3", balance + 100, current_time, user_id)
-                    await callback.message.edit_text(f"🎁 Бонус +100 монет!", reply_markup=get_game_keyboard())
+                    await callback.message.answer(f"🎁 Ежедневный бонус получен: +100 монет!", reply_markup=get_game_keyboard())
             
             elif action == "my_achievements":
                 rows = await conn.fetch("SELECT ach_name FROM achievements WHERE user_id = $1", user_id)
@@ -349,6 +355,35 @@ async def cmd_give_ach(message: types.Message):
             return
         await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", player['user_id'], ach_name)
     await message.reply(f"Достижение «{ach_name}» успешно выдано игроку @{target_username}!")
+
+# --- ПРОМОКОД ---
+@dp.message(Command("promo"))
+async def cmd_promo(message: types.Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply("Введи промокод: /promo СЛОВО")
+        return
+    
+    promo_word = args[1].strip()
+    SECRET_WORD = "ШАХТА"
+    
+    if promo_word.upper() != SECRET_WORD:
+        await message.reply("Неверный промокод.")
+        return
+        
+    user_id = message.from_user.id
+    async with db_pool.acquire() as conn:
+        player = await conn.fetchrow("SELECT used_promo FROM players WHERE user_id = $1", user_id)
+        if not player:
+            await message.reply("Сначала напиши /start")
+            return
+            
+        if player['used_promo']:
+            await message.reply("Ты уже использовал этот промокод!")
+            return
+            
+        await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
+        await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
 
 # --- ЗАПУСК СЕРВЕРА ---
 async def main():
