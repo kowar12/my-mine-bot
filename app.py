@@ -121,6 +121,20 @@ def roll_ore():
     chosen_name = random.choices(ores, weights=chances, k=1)[0]
     return next(o for o in ORES if o["name"] == chosen_name)
 
+# --- ФОНОВОЕ НАПОМИНАНИЕ ---
+async def remind_later(user_id):
+    await asyncio.sleep(300) # Ждем 5 минут
+    try:
+        # Проверяем, не скопал ли он уже еще раз (по базе)
+        async with db_pool.acquire() as conn:
+            player = await conn.fetchrow("SELECT last_mine_time FROM players WHERE user_id = $1", user_id)
+            if player:
+                # Если с момента последней копки прошло 5 минут (или чуть больше)
+                if time.time() - player['last_mine_time'] >= 295:
+                    await bot.send_message(user_id, "⛏️ Эй, шахтер! Твоя шахта остыла. Жми «Копать», чтобы добыть новую руду!")
+    except Exception as e:
+        print(f"Не удалось отправить напоминание: {e}")
+
 async def check_achievements(user_id, balance, total_mined, chat_id, message_obj):
     new_achievements = []
     async with db_pool.acquire() as conn:
@@ -208,7 +222,6 @@ async def handle_buttons(callback: types.CallbackQuery):
             balance, current_time = calculate_passive_income(user_id, balance, last_seen)
             await conn.execute("UPDATE players SET balance = $1, last_seen = $2 WHERE user_id = $3", balance, current_time, user_id)
 
-            # ЛОГИКА НАПОМИНАНИЙ
             mine_ready = (current_time - last_mine_time >= 300)
             bonus_ready = (current_time - last_bonus_time >= 86400)
 
@@ -248,6 +261,9 @@ async def handle_buttons(callback: types.CallbackQuery):
                         await callback.message.answer(text, reply_markup=get_game_keyboard())
                     except Exception:
                         pass
+                
+                # ЗАПУСКАЕМ ТАЙМЕР НА 5 МИНУТ
+                asyncio.create_task(remind_later(user_id))
 
             elif action == "inventory":
                 p_data = PICKAXES[active_pickaxe]
@@ -330,7 +346,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                 base_mult = PICKAXES[active_pickaxe]["base_mult"]
                 total_mult = base_mult + (p_lvl - 1) * 0.5
                 
-                # Напоминание в профиле
                 reminder = ""
                 if mine_ready:
                     reminder = "\n\n🔔 **Шахта уже остыла!** Жми «Копать»."
