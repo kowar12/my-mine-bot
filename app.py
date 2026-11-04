@@ -8,13 +8,10 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions, FSInputFile
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = "@merrymine_news"
-WEBHOOK_URL = "https://my-mine-bot.onrender.com" 
 DATABASE_URL = os.environ.get("DATABASE_URL") 
 
 bot = Bot(token=TOKEN)
@@ -220,7 +217,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     f"⏳ Следующая копка через 5 минут."
                 )
                 
-                # Двойная защита: пробуем отправить фото, если падает - шлем текст
                 try:
                     photo = FSInputFile(ore["img"])
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
@@ -228,7 +224,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     try:
                         await callback.message.answer(text, reply_markup=get_game_keyboard())
                     except Exception:
-                        pass # Если и текст не отправился, просто идем дальше
+                        pass
             
             elif action == "inventory":
                 p_data = PICKAXES[active_pickaxe]
@@ -392,23 +388,13 @@ async def cmd_promo(message: types.Message):
         await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
         await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
 
-# --- ЗАПУСК СЕРВЕРА ---
+# --- ЗАПУСК ЧЕРЕЗ POLLING ---
 async def main():
     await init_db()
-    print("Бот запущен!")
-    await bot.set_webhook(WEBHOOK_URL)
-    print(f"Вебхук установлен на {WEBHOOK_URL}")
-    app = web.Application()
-    webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_requests_handler.register(app, path="/")
-    setup_application(app, dp, bot=bot)
-    port = int(os.environ.get('PORT', 8080))
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"Сервер запущен на порту {port}")
-    await asyncio.Event().wait()
+    print("Бот запущен (Polling)!")
+    # Удаляем вебхук, чтобы бот мог работать через polling
+    await bot.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
