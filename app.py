@@ -3,20 +3,33 @@ import time
 import os
 import random
 import asyncpg
+import traceback
+import threading
 from datetime import datetime, timedelta
+from flask import Flask
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions, FSInputFile
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 
 # --- НАСТРОЙКИ ---
 TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = "@merrymine_news"
 DATABASE_URL = os.environ.get("DATABASE_URL") 
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
+
+# --- МИКРО-СЕРВЕР ДЛЯ RENDER (чтобы не убивал бота) ---
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is alive!", 200
+
+def run_flask():
+    # Render сам подставит нужный порт в переменную PORT
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 # --- СПИСОК РУД ---
 ORES = [
@@ -69,6 +82,7 @@ async def init_db():
 def get_player_level(total_mined): return (total_mined // 500) + 1
 
 def get_pickaxe_level(levels_str, pickaxe_id):
+    if not levels_str: return 1
     parts = levels_str.split(',')
     for p in parts:
         if p.startswith(f"{pickaxe_id}:"):
@@ -76,6 +90,7 @@ def get_pickaxe_level(levels_str, pickaxe_id):
     return 1
 
 def update_pickaxe_level(levels_str, pickaxe_id, new_level):
+    if not levels_str: return f"{pickaxe_id}:{new_level}"
     parts = levels_str.split(',')
     for i, p in enumerate(parts):
         if p.startswith(f"{pickaxe_id}:"):
@@ -168,6 +183,11 @@ async def handle_buttons(callback: types.CallbackQuery):
         chat_id = callback.message.chat.id
         action = callback.data
 
+        # ЗАЩИТА ОТ ПУСТОГО CALLBACK.DATA
+        if action is None:
+            await callback.answer("Кнопка сломалась, попробуй /start", show_alert=True)
+            return
+
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             if not player:
@@ -176,13 +196,16 @@ async def handle_buttons(callback: types.CallbackQuery):
 
             balance = player['balance']
             active_pickaxe = player['active_pickaxe']
-            owned_pickaxes = player['owned_pickaxes'].split(',')
-            pickaxe_levels = player['pickaxe_levels']
-            last_bonus_time = player['last_bonus_time']
-            last_mine_time = player['last_mine_time']
-            last_seen = player['last_seen']
-            total_mined = player['total_mined']
-            current_status = player['current_status']
+            # ЗАЩИТА ОТ NONE В БАЗЕ
+            owned_pickaxes_str = player['owned_pickaxes'] or 'wood'
+            owned_pickaxes = owned_pickaxes_str.split(',')
+            
+            pickaxe_levels = player['pickaxe_levels'] or 'wood:1'
+            last_bonus_time = player['last_bonus_time'] or 0
+            last_mine_time = player['last_mine_time'] or 0
+            last_seen = player['last_seen'] or 0
+            total_mined = player['total_mined'] or 0
+            current_status = player['current_status'] or 'Новичок'
             current_time = time.time()
 
             balance, current_time = calculate_passive_income(user_id, balance, last_seen)
@@ -261,7 +284,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                 price = PICKAXES[pickaxe_id]["price"]
                 if balance >= price:
                     new_balance = balance - price
-                    new_owned = player['owned_pickaxes'] + f",{pickaxe_id}"
+                    new_owned = owned_pickaxes_str + f",{pickaxe_id}"
                     await conn.execute("UPDATE players SET balance = $1, owned_pickaxes = $2 WHERE user_id = $3", new_balance, new_owned, user_id)
 
                     text = f"🎉 Ты купил {PICKAXES[pickaxe_id]['name']} кирку!\n\nТеперь она в твоем инвентаре."
@@ -332,7 +355,11 @@ async def handle_buttons(callback: types.CallbackQuery):
                 await callback.message.answer("🏅 Достижения:\n" + ("\n".join([f"• {a}" for a in achs]) if achs else "Нет"))
 
     except Exception as e:
-        print(e)
+        traceback.print_exc()
+        try:
+            await callback.message.answer(f"⚠️ ОШИБКА В КОДЕ:\n`{e}`\n\nПодробности в логах Render.", parse_mode="Markdown")
+        except Exception:
+            pass
 
 # --- КОМАНДА ДЛЯ ВЫДАЧИ ДОСТИЖЕНИЙ ---
 @dp.message(Command("give_ach"))
@@ -388,14 +415,16 @@ async def cmd_promo(message: types.Message):
         await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
         await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
 
-# --- ЗАПУСК ЧЕРЕЗ POLLING ---
+# --- ЗАПУСК ---
 async def main():
     await init_db()
     print("Бот запущен (Polling)!")
-    # Удаляем вебхук, чтобы бот мог работать через polling
-    # ВАЖНО: drop_pending_updates=False, чтобы не терять клики при рестартах Render
+    # drop_pending_updates=False, чтобы не терять клики
     await bot.delete_webhook(drop_pending_updates=False)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке, чтобы Render видел открытый порт
+    threading.Thread(target=run_flask, daemon=True).start()
+    # Запускаем бота
     asyncio.run(main())
