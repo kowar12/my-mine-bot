@@ -41,7 +41,14 @@ PICKAXES = {
 # --- БАЗА ДАННЫХ ---
 async def init_db():
     global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    # ИСПРАВЛЕНИЕ ОШИБКИ КЭША: statement_cache_size=0
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL, 
+        min_size=1, 
+        max_size=10,
+        statement_cache_size=0
+    )
+    
     async with db_pool.acquire() as conn:
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS players (
@@ -312,9 +319,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                 await callback.message.answer(text)
             
             elif action == "bonus":
-                # Проверяем, прошло ли 24 часа (86400 секунд)
                 if current_time - last_bonus_time < 86400: 
-                    # Считаем, сколько осталось
                     wait_sec = 86400 - (current_time - last_bonus_time)
                     hours = int(wait_sec // 3600)
                     minutes = int((wait_sec % 3600) // 60)
