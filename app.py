@@ -21,7 +21,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
-# --- СПИСОК РУД (Шанс выпадения, награда, эмодзи) ---
+# --- СПИСОК РУД ---
 ORES = [
     {"name": "Обычная руда", "chance": 60, "reward": 10, "emoji": "🪨"},
     {"name": "Уголь", "chance": 25, "reward": 25, "emoji": "🪵"},
@@ -30,13 +30,12 @@ ORES = [
     {"name": "Супер руда", "chance": 1, "reward": 500, "emoji": "🔮"}
 ]
 
-# --- СПИСОК КИРОК (ID, Название, Множитель, Цена) ---
+# --- СПИСОК КИРОК ---
 PICKAXES = {
-    "wood": {"name": "Деревянная", "mult": 1, "price": 0, "emoji": "🪵"},
-    "stone": {"name": "Каменная", "mult": 2, "price": 5000, "emoji": "🪨"},
-    "gold": {"name": "Золотая", "mult": 3, "price": 20000, "emoji": "🥇"},
-    "diamond": {"name": "Алмазная", "mult": 5, "price": 100000, "emoji": "💎"},
-    "admin": {"name": "Кирка Богов", "mult": 10, "price": -1, "emoji": "🔮"}
+    "wood": {"name": "Деревянная", "base_mult": 1, "price": 0, "emoji": "🪵"},
+    "stone": {"name": "Каменная", "base_mult": 2, "price": 5000, "emoji": "🪨"},
+    "gold": {"name": "Золотая", "base_mult": 3, "price": 20000, "emoji": "🥇"},
+    "diamond": {"name": "Алмазная", "base_mult": 5, "price": 100000, "emoji": "💎"}
 }
 
 # --- БАЗА ДАННЫХ ---
@@ -47,33 +46,46 @@ async def init_db():
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS players (
                 user_id BIGINT PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0,
-                active_pickaxe TEXT DEFAULT 'wood', owned_pickaxes TEXT DEFAULT 'wood',
+                active_pickaxe TEXT DEFAULT 'wood', pickaxe_levels TEXT DEFAULT 'wood:1',
+                owned_pickaxes TEXT DEFAULT 'wood',
                 last_bonus_time DOUBLE PRECISION DEFAULT 0,
                 last_sub_bonus_time DOUBLE PRECISION DEFAULT 0, last_mine_time DOUBLE PRECISION DEFAULT 0,
                 last_seen DOUBLE PRECISION DEFAULT 0, total_mined INTEGER DEFAULT 0,
                 current_status TEXT DEFAULT 'Новичок'
             )
         """)
-        # Добавляем новые колонки, если база старая
-        try: await conn.execute("ALTER TABLE players ADD COLUMN active_pickaxe TEXT DEFAULT 'wood'")
-        except asyncpg.exceptions.DuplicateColumnError: pass
-        try: await conn.execute("ALTER TABLE players ADD COLUMN owned_pickaxes TEXT DEFAULT 'wood'")
-        except asyncpg.exceptions.DuplicateColumnError: pass
+        for col in ["active_pickaxe", "pickaxe_levels", "owned_pickaxes"]:
+            try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
+            except asyncpg.exceptions.DuplicateColumnError: pass
         
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS achievements (user_id BIGINT, ach_name TEXT, PRIMARY KEY (user_id, ach_name))")
 
 def get_player_level(total_mined): return (total_mined // 500) + 1
 
+def get_pickaxe_level(levels_str, pickaxe_id):
+    parts = levels_str.split(',')
+    for p in parts:
+        if p.startswith(f"{pickaxe_id}:"):
+            return int(p.split(':')[1])
+    return 1
+
+def update_pickaxe_level(levels_str, pickaxe_id, new_level):
+    parts = levels_str.split(',')
+    for i, p in enumerate(parts):
+        if p.startswith(f"{pickaxe_id}:"):
+            parts[i] = f"{pickaxe_id}:{new_level}"
+            return ",".join(parts)
+    return levels_str + f",{pickaxe_id}:{new_level}"
+
+def get_upgrade_cost(level): return 100 + (level - 1) * 50
+
 def get_game_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⛏️ Копать", callback_data="mine")],
-        [InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
-        [InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_players")],
-        [InlineKeyboardButton(text="🏰 Топ бесед", callback_data="top_chats")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus")],
-        [InlineKeyboardButton(text="📢 Подписка", callback_data="sub_bonus")],
+        [InlineKeyboardButton(text="⛏️ Копать", callback_data="mine"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
+        [InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_players"), InlineKeyboardButton(text="🏰 Топ бесед", callback_data="top_chats")],
+        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="📢 Подписка", callback_data="sub_bonus")],
         [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements")]
     ])
 
@@ -98,11 +110,6 @@ async def check_achievements(user_id, balance, total_mined, chat_id, message_obj
             if not res:
                 await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", user_id, 'Первая руда')
                 new_achievements.append("⛏️ Первая руда")
-        if balance >= 10000:
-            res = await conn.fetchrow("SELECT 1 FROM achievements WHERE user_id = $1 AND ach_name = 'Богач'", user_id)
-            if not res:
-                await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", user_id, 'Богач')
-                new_achievements.append("💰 Богач")
     
     if new_achievements:
         text = "🎉 Новое достижение!\n\n" + "\n".join(new_achievements)
@@ -159,6 +166,7 @@ async def handle_buttons(callback: types.CallbackQuery):
             balance = player['balance']
             active_pickaxe = player['active_pickaxe']
             owned_pickaxes = player['owned_pickaxes'].split(',')
+            pickaxe_levels = player['pickaxe_levels']
             last_bonus_time = player['last_bonus_time']
             last_mine_time = player['last_mine_time']
             last_seen = player['last_seen']
@@ -170,16 +178,22 @@ async def handle_buttons(callback: types.CallbackQuery):
             await conn.execute("UPDATE players SET balance = $1, last_seen = $2 WHERE user_id = $3", balance, current_time, user_id)
 
             if action == "mine":
-                if current_time - last_mine_time < 5:
-                    await callback.answer(f"⏳ Подожди {round(5 - (current_time - last_mine_time), 1)} сек.", show_alert=True)
+                # КУЛДАУН 15 МИНУТ (900 секунд)
+                if current_time - last_mine_time < 900:
+                    wait_sec = round(900 - (current_time - last_mine_time), 1)
+                    await callback.answer(f"⏳ Шахта остывает! Подожди {wait_sec // 60} мин. {wait_sec % 60} сек.", show_alert=True)
                     return
                 
                 ore = roll_ore()
-                mult = PICKAXES[active_pickaxe]["mult"]
-                mined = ore["reward"] * mult
+                p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
+                base_mult = PICKAXES[active_pickaxe]["base_mult"]
+                total_mult = base_mult + (p_lvl - 1) * 0.5
+                
+                mined = int(ore["reward"] * total_mult)
                 new_balance = balance + mined
                 new_total = total_mined + mined
                 
+                # Обновляем last_mine_time
                 await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3 WHERE user_id = $4", new_balance, current_time, new_total, user_id)
                 if chat_id < 0:
                     await conn.execute("UPDATE chats SET total_balance = total_balance + $1 WHERE chat_id = $2", mined, chat_id)
@@ -188,13 +202,14 @@ async def handle_buttons(callback: types.CallbackQuery):
                 
                 await callback.message.edit_text(
                     f"⛏️ {callback.from_user.first_name} накопал: {ore['emoji']} {ore['name']}!\n"
-                    f"💰 Получено: {mined} монет (x{mult})\n"
-                    f"💳 Баланс: {new_balance}", 
+                    f"💰 Получено: {mined} монет (x{total_mult})\n"
+                    f"💳 Баланс: {new_balance}\n\n"
+                    f"⏳ Следующая копка через 15 минут.", 
                     reply_markup=get_game_keyboard()
                 )
             
+            # ... (остальной код для инвентаря, улучшения, профиля и т.д. остается без изменений) ...
             elif action == "inventory":
-                # Показываем доступные кирки
                 text = "🎒 Твой инвентарь:\n\n"
                 buttons = []
                 for p_id, p_data in PICKAXES.items():
@@ -202,7 +217,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                         status = "✅ (Активна)" if p_id == active_pickaxe else "Надеть"
                         buttons.append([InlineKeyboardButton(text=f"{p_data['emoji']} {p_data['name']} — {status}", callback_data=f"equip_{p_id}")])
                     else:
-                        # Кнопка покупки
                         if p_data['price'] > 0:
                             buttons.append([InlineKeyboardButton(text=f"🛒 Купить {p_data['name']} за {p_data['price']}", callback_data=f"buy_{p_id}")])
                 
@@ -226,18 +240,42 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_owned = player['owned_pickaxes'] + f",{pickaxe_id}"
                     await conn.execute("UPDATE players SET balance = $1, owned_pickaxes = $2 WHERE user_id = $3", new_balance, new_owned, user_id)
                     await callback.answer(f"Ты купил {PICKAXES[pickaxe_id]['name']} кирку!", show_alert=True)
-                    # Обновляем инвентарь
-                    await handle_buttons(callback) # Перерисовываем меню
+                    await handle_buttons(callback)
                 else:
                     await callback.answer(f"Нужно {price} монет!", show_alert=True)
+
+            elif action == "upgrade_menu":
+                p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
+                cost = get_upgrade_cost(p_lvl)
+                text = f"🛒 Улучшение кирки: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']}\n\nТекущий уровень: {p_lvl}\nСтоимость улучшения: {cost} монет\n\nКаждый уровень дает +0.5 к множителю добычи!"
+                
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=f"Улучшить за {cost}", callback_data="do_upgrade")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+                ])
+                await callback.message.edit_text(text, reply_markup=kb)
+
+            elif action == "do_upgrade":
+                p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
+                cost = get_upgrade_cost(p_lvl)
+                if balance >= cost:
+                    new_balance = balance - cost
+                    new_levels = update_pickaxe_level(pickaxe_levels, active_pickaxe, p_lvl + 1)
+                    await conn.execute("UPDATE players SET balance = $1, pickaxe_levels = $2 WHERE user_id = $3", new_balance, new_levels, user_id)
+                    await callback.answer(f"Кирка улучшена до {p_lvl + 1} уровня!", show_alert=True)
+                    await handle_buttons(callback)
+                else:
+                    await callback.answer(f"Нужно {cost} монет!", show_alert=True)
 
             elif action == "back_to_menu":
                 await callback.message.edit_text("Главное меню:", reply_markup=get_game_keyboard())
 
             elif action == "profile":
                 level = get_player_level(total_mined)
-                mult = PICKAXES[active_pickaxe]["mult"]
-                await callback.message.answer(f"👤 Профиль: {callback.from_user.first_name}\n🎖 Статус: {current_status}\n🏆 Уровень: {level}\n💰 Баланс: {balance} монет\n⛏️ Активная кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (x{mult})")
+                p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
+                base_mult = PICKAXES[active_pickaxe]["base_mult"]
+                total_mult = base_mult + (p_lvl - 1) * 0.5
+                await callback.message.answer(f"👤 Профиль: {callback.from_user.first_name}\n🎖 Статус: {current_status}\n🏆 Уровень: {level}\n💰 Баланс: {balance} монет\n⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult})")
             
             elif action == "top_players":
                 rows = await conn.fetch("SELECT username, balance FROM players ORDER BY balance DESC LIMIT 5")
@@ -264,22 +302,19 @@ async def handle_buttons(callback: types.CallbackQuery):
     except Exception as e:
         print(e)
 
-# --- КОМАНДА ДЛЯ ВЫДАЧИ ДОСТИЖЕНИЙ (ТОЛЬКО ДЛЯ АДМИНА) ---
+# --- КОМАНДА ДЛЯ ВЫДАЧИ ДОСТИЖЕНИЙ ---
 @dp.message(Command("give_ach"))
 async def cmd_give_ach(message: types.Message):
-    ADMIN_ID = 6564750882 # Твой ID уже вставлен
+    ADMIN_ID = 6564750882
     if message.from_user.id != ADMIN_ID:
         await message.reply("У тебя нет прав для этой команды.")
         return
-
     args = message.text.split(maxsplit=2)
     if len(args) < 3:
         await message.reply("Используй: /give_ach @username Название достижения")
         return
-
     target_username = args[1].replace("@", "")
     ach_name = args[2]
-
     async with db_pool.acquire() as conn:
         player = await conn.fetchrow("SELECT user_id FROM players WHERE username = $1", target_username)
         if not player:
@@ -290,29 +325,24 @@ async def cmd_give_ach(message: types.Message):
             await message.reply(f"У игрока @{target_username} уже есть достижение «{ach_name}».")
             return
         await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", player['user_id'], ach_name)
-    
     await message.reply(f"Достижение «{ach_name}» успешно выдано игроку @{target_username}!")
 
-# --- ЗАПУСК СЕРВЕРА ДЛЯ RENDER ---
+# --- ЗАПУСК СЕРВЕРА ---
 async def main():
     await init_db()
     print("Бот запущен!")
-    
     await bot.set_webhook(WEBHOOK_URL)
     print(f"Вебхук установлен на {WEBHOOK_URL}")
-    
     app = web.Application()
     webhook_requests_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     webhook_requests_handler.register(app, path="/")
     setup_application(app, dp, bot=bot)
-    
     port = int(os.environ.get('PORT', 8080))
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Сервер запущен на порту {port}")
-    
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
