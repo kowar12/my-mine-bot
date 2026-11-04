@@ -41,7 +41,6 @@ PICKAXES = {
 # --- БАЗА ДАННЫХ ---
 async def init_db():
     global db_pool
-    # ИСПРАВЛЕНИЕ ОШИБКИ КЭША: statement_cache_size=0
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
         min_size=1, 
@@ -222,10 +221,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                 )
                 
                 try:
+                    # Пытаемся отправить картинку
                     photo = FSInputFile(ore["img"])
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
                     await callback.message.delete()
                 except Exception:
+                    # Если картинка не отправилась (таймаут), шлем просто текст
                     await callback.message.edit_text(text, reply_markup=get_game_keyboard())
             
             elif action == "inventory":
