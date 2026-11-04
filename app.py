@@ -54,13 +54,16 @@ async def init_db():
                 last_bonus_time DOUBLE PRECISION DEFAULT 0,
                 last_sub_bonus_time DOUBLE PRECISION DEFAULT 0, last_mine_time DOUBLE PRECISION DEFAULT 0,
                 last_seen DOUBLE PRECISION DEFAULT 0, total_mined INTEGER DEFAULT 0,
-                current_status TEXT DEFAULT 'Новичок', used_promo BOOLEAN DEFAULT FALSE
+                current_status TEXT DEFAULT 'Новичок', used_promo BOOLEAN DEFAULT FALSE,
+                reminders_enabled BOOLEAN DEFAULT TRUE
             )
         """)
         for col in ["active_pickaxe", "pickaxe_levels", "owned_pickaxes"]:
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             except asyncpg.exceptions.DuplicateColumnError: pass
         try: await conn.execute("ALTER TABLE players ADD COLUMN used_promo BOOLEAN DEFAULT FALSE")
+        except asyncpg.exceptions.DuplicateColumnError: pass
+        try: await conn.execute("ALTER TABLE players ADD COLUMN reminders_enabled BOOLEAN DEFAULT TRUE")
         except asyncpg.exceptions.DuplicateColumnError: pass
         
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
@@ -135,6 +138,7 @@ async def cmd_start(message: types.Message):
                 await conn.execute("INSERT INTO players (user_id, username, last_seen) VALUES ($1, $2, $3)", user_id, username, current_time)
                 balance, total_mined = 0, 0
                 last_mine_time, last_bonus_time = 0, 0
+                reminders_enabled = True
                 offline_text = ""
             else:
                 balance = player['balance']
@@ -142,6 +146,7 @@ async def cmd_start(message: types.Message):
                 last_seen = player['last_seen']
                 last_mine_time = player['last_mine_time']
                 last_bonus_time = player['last_bonus_time']
+                reminders_enabled = player['reminders_enabled']
                 new_balance, current_time = calculate_passive_income(user_id, balance, last_seen)
                 offline_mined = new_balance - balance
                 balance = new_balance
@@ -154,13 +159,11 @@ async def cmd_start(message: types.Message):
         
         # --- ПРОВЕРКА НАПОМИНАНИЙ ---
         reminder = ""
-        # 1. Проверяем кулдаун шахты (5 минут = 300 сек)
-        if current_time - last_mine_time >= 300:
-            reminder += "\n\n⛏️ **Шахта снова свободна!** Жми копать!"
-        
-        # 2. Проверяем ежедневный бонус (24 часа = 86400 сек)
-        if current_time - last_bonus_time >= 86400:
-            reminder += "\n\n🎁 **Ты еще не забрал ежедневный бонус!** Жми кнопку «Бонус»!"
+        if reminders_enabled:
+            if current_time - last_mine_time >= 300:
+                reminder += "\n\n⛏️ **Шахта снова свободна!** Жми копать!"
+            if current_time - last_bonus_time >= 86400:
+                reminder += "\n\n🎁 **Ты еще не забрал ежедневный бонус!** Жми кнопку «Бонус»!"
 
         level = get_player_level(total_mined)
         caption = f"⛏️ Привет, {username}!\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 Твой баланс: {balance} монет\n🏆 Твой уровень: {level}{reminder}"
@@ -196,6 +199,7 @@ async def handle_buttons(callback: types.CallbackQuery):
             last_seen = player['last_seen']
             total_mined = player['total_mined']
             current_status = player['current_status']
+            reminders_enabled = player['reminders_enabled']
             current_time = time.time()
             
             balance, current_time = calculate_passive_income(user_id, balance, last_seen)
@@ -316,7 +320,21 @@ async def handle_buttons(callback: types.CallbackQuery):
                 p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
                 base_mult = PICKAXES[active_pickaxe]["base_mult"]
                 total_mult = base_mult + (p_lvl - 1) * 0.5
-                await callback.message.answer(f"👤 Профиль: {callback.from_user.first_name}\n🎖 Статус: {current_status}\n🏆 Уровень: {level}\n💰 Баланс: {balance} монет\n⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult})")
+                
+                # Кнопка для переключения напоминаний
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text=f"🔔 Напоминания: {'ВКЛ' if reminders_enabled else 'ВЫКЛ'}", callback_data="toggle_reminders")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+                ])
+                
+                await callback.message.answer(f"👤 Профиль: {callback.from_user.first_name}\n🎖 Статус: {current_status}\n🏆 Уровень: {level}\n💰 Баланс: {balance} монет\n⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult})", reply_markup=kb)
+            
+            elif action == "toggle_reminders":
+                new_status = not reminders_enabled
+                await conn.execute("UPDATE players SET reminders_enabled = $1 WHERE user_id = $2", new_status, user_id)
+                await callback.answer(f"Напоминания {'включены' if new_status else 'выключены'}!", show_alert=True)
+                # Обновляем профиль
+                await callback.message.delete()
             
             elif action == "top_players":
                 rows = await conn.fetch("SELECT username, balance FROM players ORDER BY balance DESC LIMIT 5")
