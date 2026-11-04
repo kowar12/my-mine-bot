@@ -66,13 +66,16 @@ async def init_db():
                 last_bonus_time DOUBLE PRECISION DEFAULT 0,
                 last_sub_bonus_time DOUBLE PRECISION DEFAULT 0, last_mine_time DOUBLE PRECISION DEFAULT 0,
                 last_seen DOUBLE PRECISION DEFAULT 0, total_mined INTEGER DEFAULT 0,
-                current_status TEXT DEFAULT 'Новичок', used_promo BOOLEAN DEFAULT FALSE
+                current_status TEXT DEFAULT 'Новичок', used_promo BOOLEAN DEFAULT FALSE,
+                notifications_enabled BOOLEAN DEFAULT TRUE
             )
         """)
         for col in ["active_pickaxe", "pickaxe_levels", "owned_pickaxes"]:
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT")
             except asyncpg.exceptions.DuplicateColumnError: pass
         try: await conn.execute("ALTER TABLE players ADD COLUMN used_promo BOOLEAN DEFAULT FALSE")
+        except asyncpg.exceptions.DuplicateColumnError: pass
+        try: await conn.execute("ALTER TABLE players ADD COLUMN notifications_enabled BOOLEAN DEFAULT TRUE")
         except asyncpg.exceptions.DuplicateColumnError: pass
 
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
@@ -105,7 +108,7 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
         [InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_players"), InlineKeyboardButton(text="🏰 Топ бесед", callback_data="top_chats")],
         [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="📢 Подписка", callback_data="sub_bonus")],
-        [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements")]
+        [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements"), InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_reminders")]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -125,15 +128,13 @@ def roll_ore():
 async def remind_later(user_id):
     await asyncio.sleep(300) # Ждем 5 минут
     try:
-        # Проверяем, не скопал ли он уже еще раз (по базе)
         async with db_pool.acquire() as conn:
-            player = await conn.fetchrow("SELECT last_mine_time FROM players WHERE user_id = $1", user_id)
-            if player:
-                # Если с момента последней копки прошло 5 минут (или чуть больше)
+            player = await conn.fetchrow("SELECT last_mine_time, notifications_enabled FROM players WHERE user_id = $1", user_id)
+            if player and player['notifications_enabled']: 
                 if time.time() - player['last_mine_time'] >= 295:
                     await bot.send_message(user_id, "⛏️ Эй, шахтер! Твоя шахта остыла. Жми «Копать», чтобы добыть новую руду!")
     except Exception as e:
-        print(f"Не удалось отправить напоминание: {e}")
+        pass
 
 async def check_achievements(user_id, balance, total_mined, chat_id, message_obj):
     new_achievements = []
@@ -264,6 +265,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                 
                 # ЗАПУСКАЕМ ТАЙМЕР НА 5 МИНУТ
                 asyncio.create_task(remind_later(user_id))
+
+            elif action == "toggle_reminders":
+                new_state = not player['notifications_enabled']
+                await conn.execute("UPDATE players SET notifications_enabled = $1 WHERE user_id = $2", new_state, user_id)
+                status_text = "включены ✅" if new_state else "выключены ❌"
+                await callback.answer(f"Напоминания {status_text}!", show_alert=True)
 
             elif action == "inventory":
                 p_data = PICKAXES[active_pickaxe]
