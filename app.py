@@ -220,14 +220,15 @@ async def handle_buttons(callback: types.CallbackQuery):
                     f"⏳ Следующая копка через 5 минут."
                 )
                 
+                # Двойная защита: пробуем отправить фото, если падает - шлем текст
                 try:
-                    # Пытаемся отправить картинку
                     photo = FSInputFile(ore["img"])
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
-                    await callback.message.delete()
                 except Exception:
-                    # Если картинка не отправилась (таймаут), шлем просто текст
-                    await callback.message.edit_text(text, reply_markup=get_game_keyboard())
+                    try:
+                        await callback.message.answer(text, reply_markup=get_game_keyboard())
+                    except Exception:
+                        pass # Если и текст не отправился, просто идем дальше
             
             elif action == "inventory":
                 p_data = PICKAXES[active_pickaxe]
