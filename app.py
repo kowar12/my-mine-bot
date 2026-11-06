@@ -20,7 +20,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
-# --- СЕРВЕР ДЛЯ RENDER (ПРОСТОЙ И НАДЕЖНЫЙ) ---
+# --- СЕРВЕР ДЛЯ RENDER ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -29,10 +29,9 @@ def health_check():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    # Отключаем reloader и debug, чтобы Render видел стабильный процесс
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-# --- СПИСКИ (РУДЫ, КИРКИ, СТАТУСЫ) ---
+# --- СПИСКИ ---
 ORES = [
     {"name": "Обычная руда", "chance": 60, "reward": 10, "emoji": "🪨", "img": "ore_cammon.jpg"},
     {"name": "Уголь", "chance": 25, "reward": 25, "emoji": "🪵", "img": "ore_coal.jpg"},
@@ -136,7 +135,6 @@ def roll_ore():
     chosen_name = random.choices(ores, weights=chances, k=1)[0]
     return next(o for o in ORES if o["name"] == chosen_name)
 
-# --- НАПОМИНАНИЯ И АЧИВКИ ---
 async def remind_later(user_id):
     await asyncio.sleep(300)
     try:
@@ -161,7 +159,6 @@ async def check_achievements(user_id, balance, total_mined, chat_id, message_obj
         text = "🎉 Новое достижение!\n\n" + "\n".join(new_achievements)
         await message_obj.answer(text)
 
-# --- ОБРАБОТЧИКИ ---
 @dp.message(Command("start", ignore_mention=True))
 async def cmd_start(message: types.Message):
     try:
@@ -375,13 +372,13 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await callback.answer(f"Нужно {cost} монет!", show_alert=True)
 
             elif action == "status_shop":
-                text = "👑 **Магазин статусов**\n\nСтатус — это твой понт в профиле и топе. Купи его, чтобы показать всем, кто тут босс.\n\nТвой баланс: " + str(balance)
+                text = "👑 Магазин статусов\n\nСтатус — это твой понт в профиле и топе. Купи его, чтобы показать всем, кто тут босс.\n\nТвой баланс: " + str(balance)
                 buttons = []
                 for status_name, price in STATUSES.items():
                     if price == 0: continue
                     buttons.append([InlineKeyboardButton(text=f"{status_name} — {price} монет", callback_data=f"buy_status_{status_name}")])
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="Markdown")
+                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action.startswith("buy_status_"):
                 new_status = action.replace("buy_status_", "")
@@ -398,7 +395,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_balance = balance - price
                     await conn.execute("UPDATE players SET balance = $1, current_status = $2 WHERE user_id = $3", new_balance, new_status, user_id)
                     await callback.answer(f"🎉 Ты купил статус «{new_status}»!", show_alert=True)
-                    await callback.message.answer(f"👑 Поздравляю! Теперь твой статус: **{new_status}**", parse_mode="Markdown", reply_markup=get_game_keyboard())
+                    await callback.message.answer(f"👑 Поздравляю! Теперь твой статус: {new_status}", reply_markup=get_game_keyboard())
                 else:
                     await callback.answer(f"Нужно {price} монет!", show_alert=True)
 
@@ -413,9 +410,9 @@ async def handle_buttons(callback: types.CallbackQuery):
                 
                 reminder = ""
                 if mine_ready:
-                    reminder = "\n\n🔔 **Шахта уже остыла!** Жми «Копать»."
+                    reminder = "\n\n🔔 Шахта уже остыла! Жми «Копать»."
                 if bonus_ready:
-                    reminder += "\n🎁 **Бонус доступен!** Забери свои 100 монет."
+                    reminder += "\n🎁 Бонус доступен! Забери свои 100 монет."
 
                 ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
                 kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -423,14 +420,15 @@ async def handle_buttons(callback: types.CallbackQuery):
                     [InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_menu")]
                 ])
 
+                # БЕЗ parse_mode, ЧТОБЫ НЕ ЛОМАЛОСЬ НА ССЫЛКАХ
                 await callback.message.answer(
                     f"👤 Профиль: {callback.from_user.first_name}\n"
                     f"🎖 Статус: {current_status}\n"
                     f"🏆 Уровень: {level}\n"
                     f"💰 Баланс: {balance} монет\n"
                     f"⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult})\n"
-                    f"🔗 Твоя ссылка для друзей (за каждого +500): {ref_link}{reminder}", 
-                    parse_mode="Markdown", reply_markup=kb
+                    f"🔗 Твоя ссылка для друзей: {ref_link}{reminder}", 
+                    reply_markup=kb
                 )
 
             elif action == "top_players":
@@ -538,17 +536,17 @@ async def cmd_stats(message: types.Message):
             chats_text = "\n".join([f"• {c['chat_title']} — {c['total_balance']} монет" for c in top_chats]) if top_chats else "Нет чатов"
 
         text = (
-            f"📊 **Статистика «Шахты»**\n\n"
+            f"📊 Статистика «Шахты»\n\n"
             f"👥 Всего игроков: {players_count}\n"
             f"🏰 Всего чатов: {chats_count}\n"
             f"💰 Общий баланс игроков: {total_balance} монет\n"
             f"⛏️ Всего добыто: {total_mined_all} монет\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🏆 **Топ-5 игроков:**\n{players_text}\n\n"
-            f"🏰 **Список чатов (Топ-10):**\n{chats_text}\n\n"
+            f"🏆 Топ-5 игроков:\n{players_text}\n\n"
+            f"🏰 Список чатов (Топ-10):\n{chats_text}\n\n"
             f"*Данные актуальны на текущий момент.*"
         )
-        await message.reply(text, parse_mode="Markdown")
+        await message.reply(text)
         
     except Exception as e:
         await message.reply(f"Ошибка при получении статистики: {e}")
