@@ -14,15 +14,13 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 # --- НАСТРОЙКИ ---
 TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL") 
-
-# СЮДА ВПИШИ ЮЗЕРНЕЙМ БОТА (без @)
 BOT_USERNAME = "game_merrymine_bot" 
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
-# --- МИКРО-СЕРВЕР ДЛЯ RENDER ---
+# --- СЕРВЕР ДЛЯ RENDER (ПРОСТОЙ И НАДЕЖНЫЙ) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -31,9 +29,10 @@ def health_check():
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    # Отключаем reloader и debug, чтобы Render видел стабильный процесс
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-# --- СПИСОК РУД ---
+# --- СПИСКИ (РУДЫ, КИРКИ, СТАТУСЫ) ---
 ORES = [
     {"name": "Обычная руда", "chance": 60, "reward": 10, "emoji": "🪨", "img": "ore_cammon.jpg"},
     {"name": "Уголь", "chance": 25, "reward": 25, "emoji": "🪵", "img": "ore_coal.jpg"},
@@ -42,7 +41,6 @@ ORES = [
     {"name": "Супер руда", "chance": 1, "reward": 500, "emoji": "🔮", "img": "ore_super.jpg"}
 ]
 
-# --- СПИСОК КИРОК ---
 PICKAXES = {
     "wood": {"name": "Деревянная", "base_mult": 1, "price": 0, "emoji": "🪵", "img": "pick_wood.jpg"},
     "stone": {"name": "Каменная", "base_mult": 2, "price": 5000, "emoji": "🪨", "img": "pick_stone.jpg"},
@@ -50,7 +48,6 @@ PICKAXES = {
     "diamond": {"name": "Алмазная", "base_mult": 5, "price": 100000, "emoji": "💎", "img": "pick_diamond.jpg"}
 }
 
-# --- СТАТУСЫ ---
 STATUSES = {
     "Новичок": 0,
     "Шахтер": 10000,
@@ -122,7 +119,7 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="⛏️ Копать", callback_data="mine"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
         [InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_players"), InlineKeyboardButton(text="🏰 Топ бесед", callback_data="top_chats")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="🛒 Магазин статусов", callback_data="status_shop")],
+        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👑 Статусы", callback_data="status_shop")],
         [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements"), InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_reminders")]
     ])
 
@@ -139,7 +136,7 @@ def roll_ore():
     chosen_name = random.choices(ores, weights=chances, k=1)[0]
     return next(o for o in ORES if o["name"] == chosen_name)
 
-# --- ФОНОВОЕ НАПОМИНАНИЕ ---
+# --- НАПОМИНАНИЯ И АЧИВКИ ---
 async def remind_later(user_id):
     await asyncio.sleep(300)
     try:
@@ -148,7 +145,7 @@ async def remind_later(user_id):
             if player and player['notifications_enabled']: 
                 if time.time() - player['last_mine_time'] >= 295:
                     await bot.send_message(user_id, "⛏️ Эй, шахтер! Твоя шахта остыла. Жми «Копать», чтобы добыть новую руду!")
-    except Exception as e:
+    except Exception:
         pass
 
 async def check_achievements(user_id, balance, total_mined, chat_id, message_obj):
@@ -164,6 +161,7 @@ async def check_achievements(user_id, balance, total_mined, chat_id, message_obj
         text = "🎉 Новое достижение!\n\n" + "\n".join(new_achievements)
         await message_obj.answer(text)
 
+# --- ОБРАБОТЧИКИ ---
 @dp.message(Command("start", ignore_mention=True))
 async def cmd_start(message: types.Message):
     try:
@@ -172,7 +170,6 @@ async def cmd_start(message: types.Message):
         chat_id = message.chat.id
         chat_title = message.chat.title or "Личный чат"
         
-        # Проверка реферальной ссылки
         args = message.text.split()
         referrer_id = None
         if len(args) > 1 and args[1].startswith("ref_"):
@@ -185,12 +182,10 @@ async def cmd_start(message: types.Message):
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             current_time = time.time()
             if not player:
-                # Новый игрок
                 await conn.execute("INSERT INTO players (user_id, username, last_seen, referrer_id) VALUES ($1, $2, $3, $4)", user_id, username, current_time, referrer_id)
                 balance, total_mined = 0, 0
                 offline_text = ""
                 
-                # Начисляем бонус пригласившему
                 if referrer_id:
                     ref_row = await conn.fetchrow("SELECT user_id FROM players WHERE user_id = $1", referrer_id)
                     if ref_row:
@@ -380,7 +375,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await callback.answer(f"Нужно {cost} монет!", show_alert=True)
 
             elif action == "status_shop":
-                text = "🛒 **Магазин статусов**\n\nСтатус — это твой понт в профиле и топе. Купи его, чтобы показать всем, кто тут босс.\n\nТвой баланс: " + str(balance)
+                text = "👑 **Магазин статусов**\n\nСтатус — это твой понт в профиле и топе. Купи его, чтобы показать всем, кто тут босс.\n\nТвой баланс: " + str(balance)
                 buttons = []
                 for status_name, price in STATUSES.items():
                     if price == 0: continue
@@ -422,7 +417,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                 if bonus_ready:
                     reminder += "\n🎁 **Бонус доступен!** Забери свои 100 монет."
 
-                # Кнопка приглашения друга
                 ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="👥 Пригласить друга (500 монет)", url=ref_link)],
@@ -471,7 +465,6 @@ async def handle_buttons(callback: types.CallbackQuery):
         except Exception:
             pass
 
-# --- КОМАНДА ДЛЯ ВЫДАЧИ ДОСТИЖЕНИЙ ---
 @dp.message(Command("give_ach"))
 async def cmd_give_ach(message: types.Message):
     ADMIN_ID = 6564750882
@@ -496,7 +489,6 @@ async def cmd_give_ach(message: types.Message):
         await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", player['user_id'], ach_name)
     await message.reply(f"Достижение «{ach_name}» успешно выдано игроку @{target_username}!")
 
-# --- ПРОМОКОД ---
 @dp.message(Command("promo"))
 async def cmd_promo(message: types.Message):
     args = message.text.split(maxsplit=1)
@@ -525,7 +517,6 @@ async def cmd_promo(message: types.Message):
         await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
         await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
 
-# --- АДМИН СТАТИСТИКА ---
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     ADMIN_ID = 6564750882
@@ -562,7 +553,6 @@ async def cmd_stats(message: types.Message):
     except Exception as e:
         await message.reply(f"Ошибка при получении статистики: {e}")
 
-# --- ЗАПУСК ---
 async def main():
     await init_db()
     print("Бот запущен (Polling)!")
