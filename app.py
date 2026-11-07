@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL") 
 BOT_USERNAME = "game_merrymine_bot" 
-CHANNEL_ID = "@merrymine_news" # Твой канал для подписки
+CHANNEL_ID = "@merrymine_news"
 CHANNEL_URL = "https://t.me/merrymine_news"
 
 bot = Bot(token=TOKEN)
@@ -183,9 +183,10 @@ async def cmd_start(message: types.Message):
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             current_time = time.time()
             if not player:
-                await conn.execute("INSERT INTO players (user_id, username, last_seen, referrer_id) VALUES ($1, $2, $3, $4)", user_id, username, current_time, referrer_id)
-                balance, total_mined = 0, 0
-                offline_text = ""
+                # НОВЫЙ ИГРОК: Даем 100 монет на старт
+                await conn.execute("INSERT INTO players (user_id, username, last_seen, referrer_id, balance) VALUES ($1, $2, $3, $4, 100)", user_id, username, current_time, referrer_id)
+                balance, total_mined = 100, 0
+                offline_text = "\n\n🎁 Тебе начислено **100 монет** на старт!"
                 
                 if referrer_id:
                     ref_row = await conn.fetchrow("SELECT user_id FROM players WHERE user_id = $1", referrer_id)
@@ -195,7 +196,6 @@ async def cmd_start(message: types.Message):
                             await bot.send_message(referrer_id, f"🎉 По твоей ссылке зашел новый игрок! Тебе начислено 500 монет!")
                         except:
                             pass
-                        offline_text = "\n\n👥 Ты зашел по приглашению друга!"
             else:
                 balance = player['balance']
                 total_mined = player['total_mined']
@@ -211,7 +211,7 @@ async def cmd_start(message: types.Message):
                 await conn.execute("INSERT INTO chats (chat_id, chat_title) VALUES ($1, $2)", chat_id, chat_title)
 
         level = get_player_level(total_mined)
-        caption = f"⛏️ Привет, {username}!\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 Твой баланс: {balance} монет\n🏆 Твой уровень: {level}\n\nЖми «Копать», чтобы добывать руду!"
+        caption = f"⛏️ Привет, {username}!\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 Твой баланс: {balance} монет\n🏆 Твой уровень: {level}\n\n👇 Жми **«Копать»**, чтобы добыть первую руду и начать зарабатывать!"
 
         try:
             photo = FSInputFile("start.jpg")
@@ -445,20 +445,16 @@ async def handle_buttons(callback: types.CallbackQuery):
                 await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
             elif action == "sub_bonus":
-                # Проверяем, подписан ли пользователь на канал
                 try:
                     member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
                     if member.status in ["member", "administrator", "creator"]:
-                        # Проверяем, не забирал ли он уже бонус
                         if player['last_sub_bonus_time'] and (current_time - player['last_sub_bonus_time'] < 86400):
                              await callback.answer("Ты уже забирал этот бонус сегодня!", show_alert=True)
                              return
                         
-                        # Начисляем 500 монет
                         await conn.execute("UPDATE players SET balance = balance + 500, last_sub_bonus_time = $1 WHERE user_id = $2", current_time, user_id)
                         await callback.message.answer("🎉 Спасибо за подписку! Тебе начислено 500 монет!", reply_markup=get_game_keyboard())
                     else:
-                        # Не подписан - даем ссылку
                         kb = InlineKeyboardMarkup(inline_keyboard=[
                             [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_URL)],
                             [InlineKeyboardButton(text="✅ Я подписался", callback_data="sub_bonus")]
@@ -565,25 +561,36 @@ async def cmd_stats(message: types.Message):
             total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM players")
             total_mined_all = await conn.fetchval("SELECT COALESCE(SUM(total_mined), 0) FROM players")
 
-            top_players = await conn.fetch("SELECT username, balance FROM players ORDER BY balance DESC LIMIT 5")
-            players_text = "\n".join([f"{i}. @{p['username']} — {p['balance']}" for i, p in enumerate(top_players, 1)]) if top_players else "Нет игроков"
+            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
+            all_chats = await conn.fetch("SELECT chat_title, total_balance FROM chats ORDER BY total_balance DESC")
 
-            top_chats = await conn.fetch("SELECT chat_title, total_balance FROM chats ORDER BY total_balance DESC LIMIT 10")
-            chats_text = "\n".join([f"• {c['chat_title']} — {c['total_balance']} монет" for c in top_chats]) if top_chats else "Нет чатов"
-
-        text = (
-            f"📊 Статистика «Шахты»\n\n"
+        header = (
+            f"📊 **Статистика «Шахты»**\n\n"
             f"👥 Всего игроков: {players_count}\n"
             f"🏰 Всего чатов: {chats_count}\n"
-            f"💰 Общий баланс игроков: {total_balance} монет\n"
+            f"💰 Общий баланс: {total_balance} монет\n"
             f"⛏️ Всего добыто: {total_mined_all} монет\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"🏆 Топ-5 игроков:\n{players_text}\n\n"
-            f"🏰 Список чатов (Топ-10):\n{chats_text}\n\n"
-            f"*Данные актуальны на текущий момент.*"
         )
-        await message.reply(text)
-        
+
+        players_text = "🏆 **СПИСОК ИГРОКОВ:**\n"
+        for i, p in enumerate(all_players, 1):
+            username = p['username'] if p['username'] else "Без_ника"
+            players_text += f"{i}. [{p['current_status']}] @{username} — {p['balance']}\n"
+
+        chats_text = "\n🏰 **СПИСОК ЧАТОВ:**\n"
+        for i, c in enumerate(all_chats, 1):
+            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else "Личный чат"
+            chats_text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
+
+        full_text = header + players_text + chats_text
+
+        if len(full_text) <= 4000:
+            await message.reply(full_text)
+        else:
+            await message.reply(header + players_text)
+            await message.reply(chats_text)
+
     except Exception as e:
         await message.reply(f"Ошибка при получении статистики: {e}")
 
@@ -593,40 +600,3 @@ async def cmd_all(message: types.Message):
     ADMIN_ID = 6564750882
     if message.from_user.id != ADMIN_ID:
         await message.reply("У тебя нет прав для этой команды.")
-        return
-
-    try:
-        async with db_pool.acquire() as conn:
-            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
-            all_chats = await conn.fetch("SELECT chat_id, chat_title, total_balance FROM chats ORDER BY total_balance DESC")
-
-        text = f"👥 ПОЛНЫЙ СПИСОК ИГРОКОВ ({len(all_players)}):\n"
-        for i, p in enumerate(all_players, 1):
-            username = p['username'] if p['username'] else "Без_ника"
-            text += f"{i}. [{p['current_status']}] @{username} — {p['balance']} монет\n"
-
-        text += f"\n🏰 ПОЛНЫЙ СПИСОК ЧАТОВ ({len(all_chats)}):\n"
-        for i, c in enumerate(all_chats, 1):
-            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else f"Личный чат (ID: {c['chat_id']})"
-            text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
-
-        if len(text) > 4000:
-            players_text = f"👥 ВСЕ ИГРОКИ ({len(all_players)}):\n" + "\n".join([f"{i}. @{p['username']} — {p['balance']}" for i, p in enumerate(all_players, 1)])
-            chats_text = f"🏰 ВСЕ ЧАТЫ ({len(all_chats)}):\n" + "\n".join([f"{i}. {c['chat_title']} — {c['total_balance']}" for i, c in enumerate(all_chats, 1)])
-            await message.reply(players_text)
-            await message.reply(chats_text)
-        else:
-            await message.reply(text)
-
-    except Exception as e:
-        await message.reply(f"Ошибка: {e}")
-
-async def main():
-    await init_db()
-    print("Бот запущен (Polling)!")
-    await bot.delete_webhook(drop_pending_updates=False)
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.run(main())
