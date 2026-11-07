@@ -600,3 +600,9 @@ async def cmd_all(message: types.Message):
     ADMIN_ID = 6564750882
     if message.from_user.id != ADMIN_ID:
         await message.reply("У тебя нет прав для этой команды.")
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
+            all_chats = await
