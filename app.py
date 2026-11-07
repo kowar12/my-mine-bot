@@ -116,14 +116,14 @@ def update_pickaxe_level(levels_str, pickaxe_id, new_level):
 def get_upgrade_cost(level): return 100 + (level - 1) * 50
 
 def get_game_keyboard():
+    # Кнопка "Копать" вынесена на самый верх
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⛏️ Копать", callback_data="mine"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
+        [InlineKeyboardButton(text="⛏️ КОПАТЬ", callback_data="mine")],
+        [InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory"), InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
+        [InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu"), InlineKeyboardButton(text="👑 Статусы", callback_data="status_shop")],
         [InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_players"), InlineKeyboardButton(text="🏰 Топ бесед", callback_data="top_chats")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👑 Статусы", callback_data="status_shop")],
-        [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements"), InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_reminders")],
-        [InlineKeyboardButton(text="👥 Позвать друга (500 монет)", callback_data="invite_friend")],
-        [InlineKeyboardButton(text="🎁 Бонус за подписку (500 монет)", callback_data="sub_bonus")]
+        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_reminders")],
+        [InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend"), InlineKeyboardButton(text="🎁 Бонус за подписку", callback_data="sub_bonus")]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -139,6 +139,7 @@ def roll_ore():
     chosen_name = random.choices(ores, weights=chances, k=1)[0]
     return next(o for o in ORES if o["name"] == chosen_name)
 
+# --- НАПОМИНАНИЯ ---
 async def remind_later(user_id):
     await asyncio.sleep(300)
     try:
@@ -147,6 +148,17 @@ async def remind_later(user_id):
             if player and player['notifications_enabled']: 
                 if time.time() - player['last_mine_time'] >= 295:
                     await bot.send_message(user_id, "⛏️ Эй, шахтер! Твоя шахта остыла. Жми «Копать», чтобы добыть новую руду!")
+    except Exception:
+        pass
+
+async def remind_newbie(user_id, username):
+    await asyncio.sleep(300) # Ждем 5 минут
+    try:
+        async with db_pool.acquire() as conn:
+            player = await conn.fetchrow("SELECT total_mined, notifications_enabled FROM players WHERE user_id = $1", user_id)
+            # Если игрок так ни разу и не копнул
+            if player and player['notifications_enabled'] and player['total_mined'] == 0:
+                await bot.send_message(user_id, f"⛏️ Эй, {username}, ты зашел в Шахту, но забыл копнуть! Твоя кирка застоялась. Жми «Копать» и забери свою руду!")
     except Exception:
         pass
 
@@ -179,11 +191,12 @@ async def cmd_start(message: types.Message):
             except:
                 pass
 
+        is_new = False
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             current_time = time.time()
             if not player:
-                # НОВЫЙ ИГРОК: Даем 100 монет на старт
+                is_new = True
                 await conn.execute("INSERT INTO players (user_id, username, last_seen, referrer_id, balance) VALUES ($1, $2, $3, $4, 100)", user_id, username, current_time, referrer_id)
                 balance, total_mined = 100, 0
                 offline_text = "\n\n🎁 Тебе начислено **100 монет** на старт!"
@@ -211,13 +224,26 @@ async def cmd_start(message: types.Message):
                 await conn.execute("INSERT INTO chats (chat_id, chat_title) VALUES ($1, $2)", chat_id, chat_title)
 
         level = get_player_level(total_mined)
-        caption = f"⛏️ Привет, {username}!\n\nДобро пожаловать в «Шахту»!{offline_text}\n\n💰 Твой баланс: {balance} монет\n🏆 Твой уровень: {level}\n\n👇 Жми **«Копать»**, чтобы добыть первую руду и начать зарабатывать!"
+        
+        # Новый текст приветствия
+        caption = (
+            f"⛏️ Привет, {username}!\n\n"
+            f"Добро пожаловать в «Шахту»!{offline_text}\n\n"
+            f"💰 Твой баланс: {balance} монет\n"
+            f"🏆 Твой уровень: {level}\n\n"
+            f"Сейчас у тебя деревянная кирка, но ты можешь прокачать её до алмазной.\n"
+            f"👇 Жми **«⛏️ КОПАТЬ»**, чтобы добыть первую руду!"
+        )
 
         try:
             photo = FSInputFile("start.jpg")
             await message.answer_photo(photo=photo, caption=caption, reply_markup=get_game_keyboard())
         except Exception:
             await message.reply(caption, reply_markup=get_game_keyboard())
+
+        # Запускаем таймер напоминания для новичков
+        if is_new:
+            asyncio.create_task(remind_newbie(user_id, username))
 
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
@@ -464,6 +490,18 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await callback.answer("Ошибка проверки подписки. Убедись, что бот админ в канале.", show_alert=True)
 
             elif action == "top_players":
+                # Соревновательный триггер для новичков
+                if total_mined == 0:
+                    top_row = await conn.fetchrow("SELECT username, balance FROM players ORDER BY balance DESC LIMIT 1")
+                    if top_row:
+                        await callback.message.answer(
+                            f"🏆 До 1-го места тебе осталось **{top_row['balance']} монет**.\n"
+                            f"Лидер (@{top_row['username']}) уже накопил состояние, а ты еще нет!\n\n"
+                            f"👇 Жми «⛏️ КОПАТЬ», чтобы начать догонять!",
+                            reply_markup=get_game_keyboard()
+                        )
+                        return
+                
                 rows = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC LIMIT 5")
                 text = "🏆 Топ игроков:\n" + "\n".join([f"{i}. {r['current_status']} @{r['username']} — {r['balance']} монет" for i, r in enumerate(rows, 1)])
                 await callback.message.answer(text)
@@ -594,7 +632,6 @@ async def cmd_stats(message: types.Message):
     except Exception as e:
         await message.reply(f"Ошибка при получении статистики: {e}")
 
-# --- ПОЛНАЯ АДМИН СТАТИСТИКА (БЕЗ ЛИМИТОВ) ---
 @dp.message(Command("all"))
 async def cmd_all(message: types.Message):
     ADMIN_ID = 6564750882
@@ -605,4 +642,55 @@ async def cmd_all(message: types.Message):
     try:
         async with db_pool.acquire() as conn:
             all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
-            all_chats = await
+            all_chats = await conn.fetch("SELECT chat_id, chat_title, total_balance FROM chats ORDER BY total_balance DESC")
+
+        text = f"👥 ПОЛНЫЙ СПИСОК ИГРОКОВ ({len(all_players)}):\n"
+        for i, p in enumerate(all_players, 1):
+            username = p['username'] if p['username'] else "Без_ника"
+            text += f"{i}. [{p['current_status']}] @{username} — {p['balance']} монет\n"
+
+        text += f"\n🏰 ПОЛНЫЙ СПИСОК ЧАТОВ ({len(all_chats)}):\n"
+        for i, c in enumerate(all_chats, 1):
+            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else f"Личный чат (ID: {c['chat_id']})"
+            text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
+
+        if len(text) > 4000:
+            players_text = f"👥 ВСЕ ИГРОКИ ({len(all_players)}):\n" + "\n".join([f"{i}. @{p['username']} — {p['balance']}" for i, p in enumerate(all_players, 1)])
+            chats_text = f"🏰 ВСЕ ЧАТЫ ({len(all_chats)}):\n" + "\n".join([f"{i}. {c['chat_title']} — {c['total_balance']}" for i, c in enumerate(all_chats, 1)])
+            await message.reply(players_text)
+            await message.reply(chats_text)
+        else:
+            await message.reply(text)
+
+    except Exception as e:
+        await message.reply(f"Ошибка: {e}")
+
+@dp.message(Command("test_gift"))
+async def cmd_test_gift(message: types.Message):
+    user_id = message.from_user.id
+    
+    async with db_pool.acquire() as conn:
+        player = await conn.fetchrow("SELECT user_id FROM players WHERE user_id = $1", user_id)
+        if not player:
+            await message.reply("Сначала напиши /start")
+            return
+            
+        await conn.execute("UPDATE players SET balance = balance + 100 WHERE user_id = $1", user_id)
+        
+        await message.answer(
+            "🎁 **Вам подарок!**\n\n"
+            "Администрация игры отправила вам **100 игровых очков** (монет)!\n"
+            "Они уже зачислены на ваш баланс. 💰\n\n"
+            "Жми «Профиль», чтобы проверить!",
+            parse_mode="Markdown"
+        )
+
+async def main():
+    await init_db()
+    print("Бот запущен (Polling)!")
+    await bot.delete_webhook(drop_pending_updates=False)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(main())
