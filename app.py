@@ -15,6 +15,8 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL") 
 BOT_USERNAME = "game_merrymine_bot" 
+CHANNEL_ID = "@merrymine_news" # Твой канал для подписки
+CHANNEL_URL = "https://t.me/merrymine_news"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -119,7 +121,9 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
         [InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_players"), InlineKeyboardButton(text="🏰 Топ бесед", callback_data="top_chats")],
         [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👑 Статусы", callback_data="status_shop")],
-        [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements"), InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_reminders")]
+        [InlineKeyboardButton(text="🏅 Достижения", callback_data="my_achievements"), InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_reminders")],
+        [InlineKeyboardButton(text="👥 Позвать друга (500 монет)", callback_data="invite_friend")],
+        [InlineKeyboardButton(text="🎁 Бонус за подписку (500 монет)", callback_data="sub_bonus")]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -414,22 +418,54 @@ async def handle_buttons(callback: types.CallbackQuery):
                 if bonus_ready:
                     reminder += "\n🎁 Бонус доступен! Забери свои 100 монет."
 
-                ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="👥 Пригласить друга (500 монет)", url=ref_link)],
                     [InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_menu")]
                 ])
 
-                # БЕЗ parse_mode, ЧТОБЫ НЕ ЛОМАЛОСЬ НА ССЫЛКАХ
                 await callback.message.answer(
                     f"👤 Профиль: {callback.from_user.first_name}\n"
                     f"🎖 Статус: {current_status}\n"
                     f"🏆 Уровень: {level}\n"
                     f"💰 Баланс: {balance} монет\n"
-                    f"⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult})\n"
-                    f"🔗 Твоя ссылка для друзей: {ref_link}{reminder}", 
+                    f"⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult}){reminder}", 
                     reply_markup=kb
                 )
+
+            elif action == "invite_friend":
+                ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+                text = (
+                    f"👥 **Приглашай друзей и получай монеты!**\n\n"
+                    f"За каждого друга, который зайдет по твоей ссылке, ты получишь **500 монет**.\n\n"
+                    f"Твоя ссылка:\n`{ref_link}`\n\n"
+                    f"Просто скопируй её и отправь друзьям или в свой чат."
+                )
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_menu")]
+                ])
+                await callback.message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+            elif action == "sub_bonus":
+                # Проверяем, подписан ли пользователь на канал
+                try:
+                    member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+                    if member.status in ["member", "administrator", "creator"]:
+                        # Проверяем, не забирал ли он уже бонус
+                        if player['last_sub_bonus_time'] and (current_time - player['last_sub_bonus_time'] < 86400):
+                             await callback.answer("Ты уже забирал этот бонус сегодня!", show_alert=True)
+                             return
+                        
+                        # Начисляем 500 монет
+                        await conn.execute("UPDATE players SET balance = balance + 500, last_sub_bonus_time = $1 WHERE user_id = $2", current_time, user_id)
+                        await callback.message.answer("🎉 Спасибо за подписку! Тебе начислено 500 монет!", reply_markup=get_game_keyboard())
+                    else:
+                        # Не подписан - даем ссылку
+                        kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_URL)],
+                            [InlineKeyboardButton(text="✅ Я подписался", callback_data="sub_bonus")]
+                        ])
+                        await callback.message.answer("Чтобы получить бонус, подпишись на наш канал!", reply_markup=kb)
+                except Exception as e:
+                    await callback.answer("Ошибка проверки подписки. Убедись, что бот админ в канале.", show_alert=True)
 
             elif action == "top_players":
                 rows = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC LIMIT 5")
@@ -550,6 +586,40 @@ async def cmd_stats(message: types.Message):
         
     except Exception as e:
         await message.reply(f"Ошибка при получении статистики: {e}")
+
+# --- ПОЛНАЯ АДМИН СТАТИСТИКА (БЕЗ ЛИМИТОВ) ---
+@dp.message(Command("all"))
+async def cmd_all(message: types.Message):
+    ADMIN_ID = 6564750882
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("У тебя нет прав для этой команды.")
+        return
+
+    try:
+        async with db_pool.acquire() as conn:
+            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
+            all_chats = await conn.fetch("SELECT chat_id, chat_title, total_balance FROM chats ORDER BY total_balance DESC")
+
+        text = f"👥 ПОЛНЫЙ СПИСОК ИГРОКОВ ({len(all_players)}):\n"
+        for i, p in enumerate(all_players, 1):
+            username = p['username'] if p['username'] else "Без_ника"
+            text += f"{i}. [{p['current_status']}] @{username} — {p['balance']} монет\n"
+
+        text += f"\n🏰 ПОЛНЫЙ СПИСОК ЧАТОВ ({len(all_chats)}):\n"
+        for i, c in enumerate(all_chats, 1):
+            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else f"Личный чат (ID: {c['chat_id']})"
+            text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
+
+        if len(text) > 4000:
+            players_text = f"👥 ВСЕ ИГРОКИ ({len(all_players)}):\n" + "\n".join([f"{i}. @{p['username']} — {p['balance']}" for i, p in enumerate(all_players, 1)])
+            chats_text = f"🏰 ВСЕ ЧАТЫ ({len(all_chats)}):\n" + "\n".join([f"{i}. {c['chat_title']} — {c['total_balance']}" for i, c in enumerate(all_chats, 1)])
+            await message.reply(players_text)
+            await message.reply(chats_text)
+        else:
+            await message.reply(text)
+
+    except Exception as e:
+        await message.reply(f"Ошибка: {e}")
 
 async def main():
     await init_db()
