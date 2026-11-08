@@ -380,6 +380,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                 if is_lootbox:
                     # ПРОВЕРКА ЛИМИТА (3 РАЗА В ДЕНЬ)
                     today_date = datetime.now().strftime("%Y-%m-%d")
+                    # ИСПРАВЛЕНО: lootbox_mines_today
                     lootbox_mines = player['lootbox_mines_today'] or 0
                     last_date = player['last_lootbox_date'] or ''
                     
@@ -627,4 +628,4 @@ async def main():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.run(main())
+    asyncio.run(main()) 
