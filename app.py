@@ -376,7 +376,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     return
 
                 if is_lootbox:
-                    # ПРОВЕРКА ЛИМИТА (3 РАЗА В ДЕНЬ) БЕЗ НОВЫХ КОЛОНОК
                     cooldown_lootbox = 10800 # 3 часа
                     if current_time - last_mine_time < cooldown_lootbox:
                         wait_sec = round(cooldown_lootbox - (current_time - last_mine_time), 1)
@@ -451,13 +450,8 @@ async def handle_buttons(callback: types.CallbackQuery):
                 
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
                 
-                # Отправляем картинку текущей локации
-                try:
-                    current_img = LOCATIONS[current_location]['img']
-                    photo = FSInputFile(current_img)
-                    await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-                except Exception:
-                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                # Отправляем ТОЛЬКО текст, чтобы не было ошибок с картинками
+                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action.startswith("go_loc_"):
                 new_loc = action.replace("go_loc_", "")
