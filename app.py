@@ -268,12 +268,14 @@ async def cmd_start(message: types.Message):
             asyncio.create_task(trigger_golden_vein(chat_id))
 
         level = get_player_level(total_mined)
+        
+        # УБРАНЫ ЗВЕЗДОЧКИ, ЧТОБЫ ОНИ НЕ ОТОБРАЖАЛИСЬ В ТЕКСТЕ
         caption = (
             f"⛏️ Привет, {username}!\n\n"
             f"Добро пожаловать в «Шахту»!{offline_text}\n\n"
             f"💰 Твой баланс: {balance} монет\n"
             f"🏆 Твой уровень: {level}\n\n"
-            f"👇 Жми **«⛏️ КОПАТЬ»**, чтобы добыть первую руду!"
+            f"👇 Жми «⛏️ КОПАТЬ», чтобы добыть первую руду!"
         )
 
         try:
@@ -380,7 +382,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                 if is_lootbox:
                     # ПРОВЕРКА ЛИМИТА (3 РАЗА В ДЕНЬ)
                     today_date = datetime.now().strftime("%Y-%m-%d")
-                    # ИСПРАВЛЕНО: lootbox_mines_today
                     lootbox_mines = player['lootbox_mines_today'] or 0
                     last_date = player['last_lootbox_date'] or ''
                     
@@ -628,4 +629,4 @@ async def main():
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.run(main()) 
+    asyncio.run(main())
