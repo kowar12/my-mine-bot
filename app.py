@@ -23,6 +23,11 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
+# Глобальные переменные для ивентов
+active_golden_vein = {} 
+active_drop = {} 
+drop_winners = {} 
+
 # --- СЕРВЕР ДЛЯ RENDER ---
 app = Flask(__name__)
 
@@ -168,7 +173,7 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
         [InlineKeyboardButton(text="🏅 Артефакты", callback_data="artifacts"), InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu")],
         [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend")],
-        [InlineKeyboardButton(text="📰 Новости канала", url=CHANNEL_URL)]
+        [InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -185,6 +190,30 @@ def roll_ore(location_key):
     chosen_name = random.choices(ores, weights=chances, k=1)[0]
     return next(o for o in loc["ores"] if o["name"] == chosen_name)
 
+# --- ФОНОВЫЕ ЗАДАЧИ (ИВЕНТЫ) ---
+async def trigger_drop(chat_id):
+    await asyncio.sleep(random.randint(3600, 10800))
+    try:
+        active_drop[chat_id] = time.time()
+        drop_winners[chat_id] = []
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Забрать х2!", callback_data="claim_drop")]
+        ])
+        await bot.send_message(chat_id, "🚨 **ВНИМАНИЕ! В шахте обнаружен тайник!**\n\nПервые 3 человека, кто нажмет кнопку, получат **х2 монеты** за следующую копку! Успей!", reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        pass
+
+async def trigger_golden_vein(chat_id):
+    await asyncio.sleep(random.randint(7200, 14400))
+    try:
+        active_golden_vein[chat_id] = time.time()
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 ЗОЛОТАЯ ЖИЛА! Забрать джекпот", callback_data="claim_vein")]
+        ])
+        await bot.send_message(chat_id, "💎 **ЗОЛОТАЯ ЖИЛА!**\n\nВ шахте обнаружен огромный самородок! Кто первый нажмет кнопку — заберет **5000 монет**!", reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        pass
+
 # --- ОБРАБОТЧИКИ ---
 @dp.message(Command("start", ignore_mention=True))
 async def cmd_start(message: types.Message):
@@ -200,6 +229,8 @@ async def cmd_start(message: types.Message):
             try: referrer_id = int(args[1].replace("ref_", ""))
             except: pass
 
+        is_new_chat = False
+        
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             current_time = time.time()
@@ -226,7 +257,12 @@ async def cmd_start(message: types.Message):
 
             chat = await conn.fetchrow("SELECT chat_id FROM chats WHERE chat_id = $1", chat_id)
             if not chat:
+                is_new_chat = True
                 await conn.execute("INSERT INTO chats (chat_id, chat_title) VALUES ($1, $2)", chat_id, chat_title)
+
+        if is_new_chat and chat_id < 0:
+            asyncio.create_task(trigger_drop(chat_id))
+            asyncio.create_task(trigger_golden_vein(chat_id))
 
         level = get_player_level(total_mined)
         caption = (
@@ -245,6 +281,24 @@ async def cmd_start(message: types.Message):
 
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
+
+# --- ТЕСТОВАЯ КОМАНДА ДЛЯ ИВЕНТОВ ---
+@dp.message(Command("test_event"))
+async def cmd_test_event(message: types.Message):
+    chat_id = message.chat.id
+    if chat_id > 0:
+        await message.reply("Эта команда работает только в группах!")
+        return
+    
+    # Принудительно вызываем оба ивента
+    active_drop[chat_id] = time.time()
+    drop_winners[chat_id] = []
+    kb1 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💰 Забрать х2!", callback_data="claim_drop")]])
+    await message.answer("🚨 **ТЕСТ: В шахте обнаружен тайник!**\n\nПервые 3 человека получат бонус!", reply_markup=kb1, parse_mode="Markdown")
+    
+    active_golden_vein[chat_id] = time.time()
+    kb2 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 ЗОЛОТАЯ ЖИЛА! Забрать", callback_data="claim_vein")]])
+    await message.answer("💎 **ТЕСТ: ЗОЛОТАЯ ЖИЛА!**\n\nКто первый нажмет — заберет 5000 монет!", reply_markup=kb2, parse_mode="Markdown")
 
 @dp.callback_query()
 async def handle_buttons(callback: types.CallbackQuery):
@@ -278,6 +332,33 @@ async def handle_buttons(callback: types.CallbackQuery):
             
             current_time = time.time()
 
+            # ОБРАБОТКА ИВЕНТОВ
+            if action == "claim_vein":
+                if chat_id in active_golden_vein and (current_time - active_golden_vein[chat_id] < 300):
+                    del active_golden_vein[chat_id]
+                    await conn.execute("UPDATE players SET balance = balance + 5000 WHERE user_id = $1", user_id)
+                    await callback.message.edit_text(f"💎 **ДЖЕКПОТ!**\n\n{callback.from_user.first_name} первым нашел золотую жилу и забрал **5000 монет**! 🎉", parse_mode="Markdown")
+                else:
+                    await callback.answer("Эта жила уже остыла или её забрали!", show_alert=True)
+                return
+
+            if action == "claim_drop":
+                if chat_id in active_drop and (current_time - active_drop[chat_id] < 300):
+                    if user_id in drop_winners[chat_id]:
+                        await callback.answer("Ты уже забрал свой бонус!", show_alert=True)
+                        return
+                    if len(drop_winners[chat_id]) >= 3:
+                        await callback.answer("Все бонусы уже разобрали!", show_alert=True)
+                        return
+                    
+                    drop_winners[chat_id].append(user_id)
+                    await conn.execute("UPDATE players SET balance = balance + 500 WHERE user_id = $1", user_id)
+                    await callback.answer("🎉 Ты успел! Тебе начислено 500 монет!", show_alert=True)
+                else:
+                    await callback.answer("Тайник уже закрыт!", show_alert=True)
+                return
+
+            # ОБЫЧНЫЕ ДЕЙСТВИЯ
             if action == "mine":
                 loc_data = LOCATIONS[current_location]
                 is_lootbox = loc_data.get("is_lootbox", False)
