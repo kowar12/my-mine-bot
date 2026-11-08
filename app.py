@@ -269,7 +269,6 @@ async def cmd_start(message: types.Message):
 
         level = get_player_level(total_mined)
         
-        # УБРАНЫ ЗВЕЗДОЧКИ, ЧТОБЫ ОНИ НЕ ОТОБРАЖАЛИСЬ В ТЕКСТЕ
         caption = (
             f"⛏️ Привет, {username}!\n\n"
             f"Добро пожаловать в «Шахту»!{offline_text}\n\n"
