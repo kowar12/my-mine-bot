@@ -449,7 +449,13 @@ async def handle_buttons(callback: types.CallbackQuery):
                     buttons.append([InlineKeyboardButton(text=f"{loc_data['emoji']} {loc_data['name']} — {status}", callback_data=f"go_loc_{loc_key}")])
                 
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                
+                try:
+                    current_img = LOCATIONS[current_location]['img']
+                    photo = FSInputFile(current_img)
+                    await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                except Exception:
+                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action.startswith("go_loc_"):
                 new_loc = action.replace("go_loc_", "")
@@ -459,7 +465,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                         await conn.execute("UPDATE players SET current_location = $1 WHERE user_id = $2", new_loc, user_id)
                         
                         loc_data = LOCATIONS[new_loc]
-                        text = f"📍 Ты перешел в локацию: **{loc_data['name']}**!\n\nЖми «⛏️ КОПАТЬ», чтобы начать добычу."
+                        text = f"📍 **Вы перешли в локацию:**\n\n{loc_data['emoji']} **{loc_data['name']}**\n\nЖми «⛏️ КОПАТЬ», чтобы начать добычу."
                         
                         try:
                             photo = FSInputFile(loc_data["img"])
