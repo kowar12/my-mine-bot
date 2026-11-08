@@ -449,8 +449,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     buttons.append([InlineKeyboardButton(text=f"{loc_data['emoji']} {loc_data['name']} — {status}", callback_data=f"go_loc_{loc_key}")])
                 
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                
-                # Отправляем ТОЛЬКО текст, чтобы не было ошибок с картинками
                 await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
             elif action.startswith("go_loc_"):
@@ -459,8 +457,15 @@ async def handle_buttons(callback: types.CallbackQuery):
                     req_pickaxe = LOCATIONS[new_loc].get("required_pickaxe")
                     if LOCATIONS[new_loc].get("is_lootbox") or req_pickaxe in owned_pickaxes:
                         await conn.execute("UPDATE players SET current_location = $1 WHERE user_id = $2", new_loc, user_id)
-                        await callback.answer(f"Ты перешел в {LOCATIONS[new_loc]['name']}!")
-                        await callback.message.answer("📍 Локация изменена! Жми копать.", reply_markup=get_game_keyboard())
+                        
+                        loc_data = LOCATIONS[new_loc]
+                        text = f"📍 Ты перешел в локацию: **{loc_data['name']}**!\n\nЖми «⛏️ КОПАТЬ», чтобы начать добычу."
+                        
+                        try:
+                            photo = FSInputFile(loc_data["img"])
+                            await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
+                        except Exception:
+                            await callback.message.answer(text, reply_markup=get_game_keyboard())
                     else:
                         await callback.answer(f"Нужна {PICKAXES[req_pickaxe]['name']} кирка!", show_alert=True)
                 return
