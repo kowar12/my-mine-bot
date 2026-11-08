@@ -170,10 +170,10 @@ def get_game_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⛏️ КОПАТЬ", callback_data="mine")],
         [InlineKeyboardButton(text="🗺️ Локации", callback_data="locations"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
-        [InlineKeyboardButton(text="🏅 Артефакты", callback_data="artifacts"), InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend")],
-        [InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Магазин", callback_data="market")],
+        [InlineKeyboardButton(text="🔨 Улучшить", callback_data="upgrade_menu"), InlineKeyboardButton(text="🏅 Артефакты", callback_data="artifacts")],
+        [InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu"), InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus")],
+        [InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend"), InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -494,6 +494,25 @@ async def handle_buttons(callback: types.CallbackQuery):
                 
                 try:
                     photo = FSInputFile("inv.jpg")
+                    await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                except Exception:
+                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+            elif action == "market":
+                text = f"🛒 **Магазин кирок**\n\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить новую кирку для добычи руды:"
+                buttons = []
+                for p_id, p_data in PICKAXES.items():
+                    if p_id not in owned_pickaxes:
+                        if p_data['price'] > 0:
+                            buttons.append([InlineKeyboardButton(text=f"🛒 Купить {p_data['name']} за {p_data['price']}", callback_data=f"buy_{p_id}")])
+                
+                if not buttons:
+                    text = "🛒 **Магазин кирок**\n\nТы уже купил все доступные кирки! Жди новых обновлений."
+                
+                buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
+                
+                try:
+                    photo = FSInputFile("market.jpg")
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
                 except Exception:
                     await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
