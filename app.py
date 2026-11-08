@@ -22,6 +22,11 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 db_pool = None
 
+# Глобальные переменные для ивентов
+active_golden_vein = {} # chat_id: timestamp
+active_drop = {} # chat_id: timestamp
+drop_winners = {} # chat_id: list of user_ids who already won in this drop
+
 # --- СЕРВЕР ДЛЯ RENDER ---
 app = Flask(__name__)
 
@@ -116,7 +121,6 @@ def update_pickaxe_level(levels_str, pickaxe_id, new_level):
 def get_upgrade_cost(level): return 100 + (level - 1) * 50
 
 def get_game_keyboard():
-    # Кнопка "Копать" вынесена на самый верх
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⛏️ КОПАТЬ", callback_data="mine")],
         [InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory"), InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
@@ -139,7 +143,7 @@ def roll_ore():
     chosen_name = random.choices(ores, weights=chances, k=1)[0]
     return next(o for o in ORES if o["name"] == chosen_name)
 
-# --- НАПОМИНАНИЯ ---
+# --- ФОНОВЫЕ ЗАДАЧИ ---
 async def remind_later(user_id):
     await asyncio.sleep(300)
     try:
@@ -152,29 +156,41 @@ async def remind_later(user_id):
         pass
 
 async def remind_newbie(user_id, username):
-    await asyncio.sleep(300) # Ждем 5 минут
+    await asyncio.sleep(300)
     try:
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT total_mined, notifications_enabled FROM players WHERE user_id = $1", user_id)
-            # Если игрок так ни разу и не копнул
             if player and player['notifications_enabled'] and player['total_mined'] == 0:
                 await bot.send_message(user_id, f"⛏️ Эй, {username}, ты зашел в Шахту, но забыл копнуть! Твоя кирка застоялась. Жми «Копать» и забери свою руду!")
     except Exception:
         pass
 
-async def check_achievements(user_id, balance, total_mined, chat_id, message_obj):
-    new_achievements = []
-    async with db_pool.acquire() as conn:
-        if balance >= 10:
-            res = await conn.fetchrow("SELECT 1 FROM achievements WHERE user_id = $1 AND ach_name = 'Первая руда'", user_id)
-            if not res:
-                await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", user_id, 'Первая руда')
-                new_achievements.append("⛏️ Первая руда")
+async def trigger_drop(chat_id):
+    # Ждем случайное время от 1 до 3 часов (для теста поставь 60 секунд)
+    await asyncio.sleep(random.randint(3600, 10800))
+    try:
+        active_drop[chat_id] = time.time()
+        drop_winners[chat_id] = []
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Забрать х2!", callback_data="claim_drop")]
+        ])
+        await bot.send_message(chat_id, "🚨 **ВНИМАНИЕ! В шахте обнаружен тайник!**\n\nПервые 3 человека, кто нажмет кнопку, получат **х2 монеты** за следующую копку! Успей!", reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        pass
 
-    if new_achievements:
-        text = "🎉 Новое достижение!\n\n" + "\n".join(new_achievements)
-        await message_obj.answer(text)
+async def trigger_golden_vein(chat_id):
+    # Ждем случайное время от 2 до 4 часов (для теста 60 секунд)
+    await asyncio.sleep(random.randint(7200, 14400))
+    try:
+        active_golden_vein[chat_id] = time.time()
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💎 ЗОЛОТАЯ ЖИЛА! Забрать джекпот", callback_data="claim_vein")]
+        ])
+        await bot.send_message(chat_id, "💎 **ЗОЛОТАЯ ЖИЛА!**\n\nВ шахте обнаружен огромный самородок! Кто первый нажмет кнопку — заберет **5000 монет**!", reply_markup=kb, parse_mode="Markdown")
+    except Exception:
+        pass
 
+# --- ОБРАБОТЧИКИ ---
 @dp.message(Command("start", ignore_mention=True))
 async def cmd_start(message: types.Message):
     try:
@@ -192,6 +208,8 @@ async def cmd_start(message: types.Message):
                 pass
 
         is_new = False
+        is_new_chat = False
+        
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             current_time = time.time()
@@ -221,11 +239,16 @@ async def cmd_start(message: types.Message):
 
             chat = await conn.fetchrow("SELECT chat_id FROM chats WHERE chat_id = $1", chat_id)
             if not chat:
+                is_new_chat = True
                 await conn.execute("INSERT INTO chats (chat_id, chat_title) VALUES ($1, $2)", chat_id, chat_title)
+
+        # Если это новый чат - запускаем таймеры ивентов для него
+        if is_new_chat and chat_id < 0:
+            asyncio.create_task(trigger_drop(chat_id))
+            asyncio.create_task(trigger_golden_vein(chat_id))
 
         level = get_player_level(total_mined)
         
-        # Новый текст приветствия
         caption = (
             f"⛏️ Привет, {username}!\n\n"
             f"Добро пожаловать в «Шахту»!{offline_text}\n\n"
@@ -241,7 +264,6 @@ async def cmd_start(message: types.Message):
         except Exception:
             await message.reply(caption, reply_markup=get_game_keyboard())
 
-        # Запускаем таймер напоминания для новичков
         if is_new:
             asyncio.create_task(remind_newbie(user_id, username))
 
@@ -284,6 +306,33 @@ async def handle_buttons(callback: types.CallbackQuery):
             mine_ready = (current_time - last_mine_time >= 300)
             bonus_ready = (current_time - last_bonus_time >= 86400)
 
+            # ОБРАБОТКА ИВЕНТОВ
+            if action == "claim_vein":
+                if chat_id in active_golden_vein and (current_time - active_golden_vein[chat_id] < 300):
+                    del active_golden_vein[chat_id] # Забираем жилу
+                    await conn.execute("UPDATE players SET balance = balance + 5000 WHERE user_id = $1", user_id)
+                    await callback.message.edit_text(f"💎 **ДЖЕКПОТ!**\n\n{callback.from_user.first_name} первым нашел золотую жилу и забрал **5000 монет**! 🎉", parse_mode="Markdown")
+                else:
+                    await callback.answer("Эта жила уже остыла или её забрали!", show_alert=True)
+                return
+
+            if action == "claim_drop":
+                if chat_id in active_drop and (current_time - active_drop[chat_id] < 300):
+                    if user_id in drop_winners[chat_id]:
+                        await callback.answer("Ты уже забрал свой бонус из этого тайника!", show_alert=True)
+                        return
+                    if len(drop_winners[chat_id]) >= 3:
+                        await callback.answer("Все бонусы из этого тайника уже разобрали!", show_alert=True)
+                        return
+                    
+                    drop_winners[chat_id].append(user_id)
+                    await conn.execute("UPDATE players SET balance = balance + 500 WHERE user_id = $1", user_id)
+                    await callback.answer("🎉 Ты успел! Тебе начислено 500 монет!", show_alert=True)
+                else:
+                    await callback.answer("Тайник уже закрыт!", show_alert=True)
+                return
+
+            # ОБЫЧНЫЕ ДЕЙСТВИЯ
             if action == "mine":
                 if not mine_ready:
                     wait_sec = round(300 - (current_time - last_mine_time), 1)
@@ -302,8 +351,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                 await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3 WHERE user_id = $4", new_balance, current_time, new_total, user_id)
                 if chat_id < 0:
                     await conn.execute("UPDATE chats SET total_balance = total_balance + $1 WHERE chat_id = $2", mined, chat_id)
-
-                await check_achievements(user_id, new_balance, new_total, chat_id, callback.message)
 
                 text = (
                     f"⛏️ {callback.from_user.first_name} накопал: {ore['emoji']} {ore['name']}!\n"
@@ -490,7 +537,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await callback.answer("Ошибка проверки подписки. Убедись, что бот админ в канале.", show_alert=True)
 
             elif action == "top_players":
-                # Соревновательный триггер для новичков
                 if total_mined == 0:
                     top_row = await conn.fetchrow("SELECT username, balance FROM players ORDER BY balance DESC LIMIT 1")
                     if top_row:
@@ -533,164 +579,4 @@ async def handle_buttons(callback: types.CallbackQuery):
         except Exception:
             pass
 
-@dp.message(Command("give_ach"))
-async def cmd_give_ach(message: types.Message):
-    ADMIN_ID = 6564750882
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("У тебя нет прав для этой команды.")
-        return
-    args = message.text.split(maxsplit=2)
-    if len(args) < 3:
-        await message.reply("Используй: /give_ach @username Название достижения")
-        return
-    target_username = args[1].replace("@", "")
-    ach_name = args[2]
-    async with db_pool.acquire() as conn:
-        player = await conn.fetchrow("SELECT user_id FROM players WHERE username = $1", target_username)
-        if not player:
-            await message.reply(f"Игрок с юзернеймом @{target_username} не найден в базе.")
-            return
-        existing = await conn.fetchrow("SELECT 1 FROM achievements WHERE user_id = $1 AND ach_name = $2", player['user_id'], ach_name)
-        if existing:
-            await message.reply(f"У игрока @{target_username} уже есть достижение «{ach_name}».")
-            return
-        await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", player['user_id'], ach_name)
-    await message.reply(f"Достижение «{ach_name}» успешно выдано игроку @{target_username}!")
-
-@dp.message(Command("promo"))
-async def cmd_promo(message: types.Message):
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.reply("Введи промокод: /promo СЛОВО")
-        return
-
-    promo_word = args[1].strip()
-    SECRET_WORD = "ШАХТА"
-
-    if promo_word.upper() != SECRET_WORD:
-        await message.reply("Неверный промокод.")
-        return
-
-    user_id = message.from_user.id
-    async with db_pool.acquire() as conn:
-        player = await conn.fetchrow("SELECT used_promo FROM players WHERE user_id = $1", user_id)
-        if not player:
-            await message.reply("Сначала напиши /start")
-            return
-
-        if player['used_promo']:
-            await message.reply("Ты уже использовал этот промокод!")
-            return
-
-        await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
-        await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
-
-@dp.message(Command("stats"))
-async def cmd_stats(message: types.Message):
-    ADMIN_ID = 6564750882
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("У тебя нет прав для этой команды.")
-        return
-
-    try:
-        async with db_pool.acquire() as conn:
-            players_count = await conn.fetchval("SELECT COUNT(*) FROM players")
-            chats_count = await conn.fetchval("SELECT COUNT(*) FROM chats")
-            total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM players")
-            total_mined_all = await conn.fetchval("SELECT COALESCE(SUM(total_mined), 0) FROM players")
-
-            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
-            all_chats = await conn.fetch("SELECT chat_title, total_balance FROM chats ORDER BY total_balance DESC")
-
-        header = (
-            f"📊 **Статистика «Шахты»**\n\n"
-            f"👥 Всего игроков: {players_count}\n"
-            f"🏰 Всего чатов: {chats_count}\n"
-            f"💰 Общий баланс: {total_balance} монет\n"
-            f"⛏️ Всего добыто: {total_mined_all} монет\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-        )
-
-        players_text = "🏆 **СПИСОК ИГРОКОВ:**\n"
-        for i, p in enumerate(all_players, 1):
-            username = p['username'] if p['username'] else "Без_ника"
-            players_text += f"{i}. [{p['current_status']}] @{username} — {p['balance']}\n"
-
-        chats_text = "\n🏰 **СПИСОК ЧАТОВ:**\n"
-        for i, c in enumerate(all_chats, 1):
-            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else "Личный чат"
-            chats_text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
-
-        full_text = header + players_text + chats_text
-
-        if len(full_text) <= 4000:
-            await message.reply(full_text)
-        else:
-            await message.reply(header + players_text)
-            await message.reply(chats_text)
-
-    except Exception as e:
-        await message.reply(f"Ошибка при получении статистики: {e}")
-
-@dp.message(Command("all"))
-async def cmd_all(message: types.Message):
-    ADMIN_ID = 6564750882
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("У тебя нет прав для этой команды.")
-        return
-
-    try:
-        async with db_pool.acquire() as conn:
-            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
-            all_chats = await conn.fetch("SELECT chat_id, chat_title, total_balance FROM chats ORDER BY total_balance DESC")
-
-        text = f"👥 ПОЛНЫЙ СПИСОК ИГРОКОВ ({len(all_players)}):\n"
-        for i, p in enumerate(all_players, 1):
-            username = p['username'] if p['username'] else "Без_ника"
-            text += f"{i}. [{p['current_status']}] @{username} — {p['balance']} монет\n"
-
-        text += f"\n🏰 ПОЛНЫЙ СПИСОК ЧАТОВ ({len(all_chats)}):\n"
-        for i, c in enumerate(all_chats, 1):
-            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else f"Личный чат (ID: {c['chat_id']})"
-            text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
-
-        if len(text) > 4000:
-            players_text = f"👥 ВСЕ ИГРОКИ ({len(all_players)}):\n" + "\n".join([f"{i}. @{p['username']} — {p['balance']}" for i, p in enumerate(all_players, 1)])
-            chats_text = f"🏰 ВСЕ ЧАТЫ ({len(all_chats)}):\n" + "\n".join([f"{i}. {c['chat_title']} — {c['total_balance']}" for i, c in enumerate(all_chats, 1)])
-            await message.reply(players_text)
-            await message.reply(chats_text)
-        else:
-            await message.reply(text)
-
-    except Exception as e:
-        await message.reply(f"Ошибка: {e}")
-
-@dp.message(Command("test_gift"))
-async def cmd_test_gift(message: types.Message):
-    user_id = message.from_user.id
-    
-    async with db_pool.acquire() as conn:
-        player = await conn.fetchrow("SELECT user_id FROM players WHERE user_id = $1", user_id)
-        if not player:
-            await message.reply("Сначала напиши /start")
-            return
-            
-        await conn.execute("UPDATE players SET balance = balance + 100 WHERE user_id = $1", user_id)
-        
-        await message.answer(
-            "🎁 **Вам подарок!**\n\n"
-            "Администрация игры отправила вам **100 игровых очков** (монет)!\n"
-            "Они уже зачислены на ваш баланс. 💰\n\n"
-            "Жми «Профиль», чтобы проверить!",
-            parse_mode="Markdown"
-        )
-
-async def main():
-    await init_db()
-    print("Бот запущен (Polling)!")
-    await bot.delete_webhook(drop_pending_updates=False)
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.run(main())
+@dp.message(Command("give
