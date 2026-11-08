@@ -642,6 +642,148 @@ async def handle_buttons(callback: types.CallbackQuery):
         except Exception:
             pass
 
+@dp.message(Command("give_ach"))
+async def cmd_give_ach(message: types.Message):
+    try:
+        ADMIN_ID = 6564750882
+        if message.from_user.id != ADMIN_ID:
+            await message.reply("У тебя нет прав для этой команды.")
+            return
+            
+        args = message.text.split(maxsplit=2)
+        if len(args) < 3:
+            await message.reply("Используй: /give_ach @username Название достижения")
+            return
+            
+        target_username = args[1].replace("@", "").strip()
+        ach_name = args[2].strip()
+        
+        async with db_pool.acquire() as conn:
+            player = await conn.fetchrow("SELECT user_id FROM players WHERE username = $1", target_username)
+            if not player:
+                await message.reply(f"Игрок с ником @{target_username} не найден в базе. (Может он не писал /start?)")
+                return
+                
+            existing = await conn.fetchrow("SELECT 1 FROM achievements WHERE user_id = $1 AND ach_name = $2", player['user_id'], ach_name)
+            if existing:
+                await message.reply(f"У игрока @{target_username} уже есть достижение «{ach_name}».")
+                return
+                
+            await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", player['user_id'], ach_name)
+            
+        await message.reply(f"✅ Достижение «{ach_name}» успешно выдано игроку @{target_username}!")
+        
+    except Exception as e:
+        await message.reply(f"⚠️ Ошибка при выдаче: {e}")
+
+@dp.message(Command("promo"))
+async def cmd_promo(message: types.Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.reply("Введи промокод: /promo СЛОВО")
+        return
+
+    promo_word = args[1].strip()
+    SECRET_WORD = "ШАХТА"
+
+    if promo_word.upper() != SECRET_WORD:
+        await message.reply("Неверный промокод.")
+        return
+
+    user_id = message.from_user.id
+    async with db_pool.acquire() as conn:
+        player = await conn.fetchrow("SELECT used_promo FROM players WHERE user_id = $1", user_id)
+        if not player:
+            await message.reply("Сначала напиши /start")
+            return
+
+        if player['used_promo']:
+            await message.reply("Ты уже использовал этот промокод!")
+            return
+
+        await conn.execute("UPDATE players SET balance = balance + 1000, used_promo = TRUE WHERE user_id = $1", user_id)
+        await message.reply("🎉 Промокод активирован! Ты получил 1000 монет!")
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    try:
+        ADMIN_ID = 6564750882
+        if message.from_user.id != ADMIN_ID:
+            await message.reply("У тебя нет прав для этой команды.")
+            return
+
+        async with db_pool.acquire() as conn:
+            players_count = await conn.fetchval("SELECT COUNT(*) FROM players")
+            chats_count = await conn.fetchval("SELECT COUNT(*) FROM chats")
+            total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance), 0) FROM players")
+            total_mined_all = await conn.fetchval("SELECT COALESCE(SUM(total_mined), 0) FROM players")
+
+            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
+            all_chats = await conn.fetch("SELECT chat_title, total_balance FROM chats ORDER BY total_balance DESC")
+
+        header = (
+            f"📊 **Статистика «Шахты»**\n\n"
+            f"👥 Всего игроков: {players_count}\n"
+            f"🏰 Всего чатов: {chats_count}\n"
+            f"💰 Общий баланс: {total_balance} монет\n"
+            f"⛏️ Всего добыто: {total_mined_all} монет\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        players_text = "🏆 **СПИСОК ИГРОКОВ:**\n"
+        for i, p in enumerate(all_players, 1):
+            username = p['username'] if p['username'] else "Без_ника"
+            players_text += f"{i}. [{p['current_status']}] @{username} — {p['balance']}\n"
+
+        chats_text = "\n🏰 **СПИСОК ЧАТОВ:**\n"
+        for i, c in enumerate(all_chats, 1):
+            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else "Личный чат"
+            chats_text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
+
+        full_text = header + players_text + chats_text
+
+        if len(full_text) <= 4000:
+            await message.reply(full_text)
+        else:
+            await message.reply(header + players_text)
+            await message.reply(chats_text)
+
+    except Exception as e:
+        await message.reply(f"⚠️ Ошибка в /stats: {e}")
+
+@dp.message(Command("all"))
+async def cmd_all(message: types.Message):
+    try:
+        ADMIN_ID = 6564750882
+        if message.from_user.id != ADMIN_ID:
+            await message.reply("У тебя нет прав для этой команды.")
+            return
+
+        async with db_pool.acquire() as conn:
+            all_players = await conn.fetch("SELECT username, balance, current_status FROM players ORDER BY balance DESC")
+            all_chats = await conn.fetch("SELECT chat_id, chat_title, total_balance FROM chats ORDER BY total_balance DESC")
+
+        text = f"👥 ПОЛНЫЙ СПИСОК ИГРОКОВ ({len(all_players)}):\n"
+        for i, p in enumerate(all_players, 1):
+            username = p['username'] if p['username'] else "Без_ника"
+            text += f"{i}. [{p['current_status']}] @{username} — {p['balance']} монет\n"
+
+        text += f"\n🏰 ПОЛНЫЙ СПИСОК ЧАТОВ ({len(all_chats)}):\n"
+        for i, c in enumerate(all_chats, 1):
+            chat_name = c['chat_title'] if c['chat_title'] != "Личный чат" else f"Личный чат (ID: {c['chat_id']})"
+            text += f"{i}. {chat_name} — {c['total_balance']} монет\n"
+
+        if len(text) > 4000:
+            players_text = f"👥 ВСЕ ИГРОКИ ({len(all_players)}):\n" + "\n".join([f"{i}. @{p['username']} — {p['balance']}" for i, p in enumerate(all_players, 1)])
+            chats_text = f"🏰 ВСЕ ЧАТЫ ({len(all_chats)}):\n" + "\n".join([f"{i}. {c['chat_title']} — {c['total_balance']}" for i, c in enumerate(all_chats, 1)])
+            await message.reply(players_text)
+            await message.reply(chats_text)
+        else:
+            await message.reply(text)
+
+    except Exception as e:
+        await message.reply(f"⚠️ Ошибка в /all: {e}")
+
 async def main():
     await init_db()
     print("Бот запущен (Polling)!")
