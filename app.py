@@ -37,26 +37,22 @@ def run_flask():
 # --- ГЕНЕРАТОР 100 ПРЕДМЕТОВ ---
 def generate_loot_items():
     items = []
-    # 60 Обычных (шанс 60%)
     common = ["Ржавый гвоздь", "Кусок угля", "Сломанная ручка", "Осколок стекла", "Старая тряпка", 
               "Кирпич", "Пустая банка", "Ржавая гайка", "Погнутая ложка", "Камень",
               "Веревка", "Кусок мыла", "Старый носок", "Пластиковая бутылка", "Обломок доски"]
     for i in range(60):
         items.append({"name": random.choice(common) + f" #{i+1}", "rarity": "Обычный", "emoji": "⚙️", "price": random.randint(5, 20)})
     
-    # 25 Редких (шанс 25%)
     rare = ["Старая монета", "Серебряное кольцо", "Кусок карты", "Странный амулет", "Бронзовый ключ",
             "Ржавый кинжал", "Фляга", "Осколок кристалла", "Старая книга", "Компас"]
     for i in range(25):
         items.append({"name": random.choice(rare) + f" #{i+1}", "rarity": "Редкий", "emoji": "💠", "price": random.randint(100, 300)})
         
-    # 10 Эпических (шанс 10%)
     epic = ["Древний свиток", "Золотая статуэтка", "Кристалл душ", "Руна силы", "Корона мини-короля",
             "Перо феникса", "Глаз провидца", "Клык дракона", "Сфера тьмы", "Часы времени"]
     for i in range(10):
         items.append({"name": random.choice(epic) + f" #{i+1}", "rarity": "Эпический", "emoji": "🔮", "price": random.randint(500, 1500)})
 
-    # 5 Легендарных (шанс 5%)
     legendary = ["Сердце Шахты", "Меч Владыки", "Ключ от всех дверей", "Кровь Земли", "Кристалл Бесконечности"]
     for i in range(5):
         items.append({"name": legendary[i], "rarity": "Легендарный", "emoji": "👑", "price": random.randint(5000, 10000)})
@@ -85,6 +81,19 @@ LOCATIONS = {
     "abandoned_mine": {
         "name": "Заброшенная шахта (Лутбокс)", "required_pickaxe": "wood", "emoji": "📦", "img": "loc_abandoned.jpg",
         "is_lootbox": True
+    },
+    "crystal_cave": {
+        "name": "Кристальная пещера", "required_pickaxe": "diamond", "emoji": "💎", "img": "loc_crystal.jpg",
+        "ores": [
+            {"name": "Алмаз", "chance": 70, "reward": 150, "emoji": "💎", "img": "ore_daimmond.jpg"},
+            {"name": "Супер руда", "chance": 30, "reward": 500, "emoji": "🔮", "img": "ore_super.jpg"}
+        ]
+    },
+    "lords_depths": {
+        "name": "Глубины Владыки", "required_pickaxe": "diamond", "emoji": "👑", "img": "loc_lord.jpg",
+        "ores": [
+            {"name": "Супер руда", "chance": 100, "reward": 500, "emoji": "🔮", "img": "ore_super.jpg"}
+        ]
     }
 }
 
@@ -118,7 +127,6 @@ async def init_db():
                 artifacts TEXT DEFAULT '[]'
             )
         """)
-        # Добавляем колонки, если их нет
         cols_to_add = [
             ("active_pickaxe", "TEXT"), ("pickaxe_levels", "TEXT"), ("owned_pickaxes", "TEXT"),
             ("used_promo", "BOOLEAN DEFAULT FALSE"), ("notifications_enabled", "BOOLEAN DEFAULT TRUE"),
@@ -159,7 +167,8 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="🗺️ Локации", callback_data="locations"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Улучшить", callback_data="upgrade_menu")],
         [InlineKeyboardButton(text="🏅 Артефакты", callback_data="artifacts"), InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend")]
+        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend")],
+        [InlineKeyboardButton(text="📰 Новости канала", url=CHANNEL_URL)]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -338,8 +347,14 @@ async def handle_buttons(callback: types.CallbackQuery):
                 buttons = []
                 for loc_key, loc_data in LOCATIONS.items():
                     status = "✅ (Текущая)" if loc_key == current_location else "Перейти"
-                    if not loc_data.get("is_lootbox") and loc_data["required_pickaxe"] not in owned_pickaxes:
-                        status = f"🔒 Нужна {PICKAXES[loc_data['required_pickaxe']]['name']}"
+                    
+                    if not loc_data.get("is_lootbox"):
+                        req = loc_data["required_pickaxe"]
+                        if req not in owned_pickaxes:
+                            status = f"🔒 Нужна {PICKAXES[req]['name']}"
+                        else:
+                            status = "Перейти"
+                    
                     buttons.append([InlineKeyboardButton(text=f"{loc_data['emoji']} {loc_data['name']} — {status}", callback_data=f"go_loc_{loc_key}")])
                 
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
@@ -435,7 +450,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_levels = update_pickaxe_level(pickaxe_levels, active_pickaxe, p_lvl + 1)
                     await conn.execute("UPDATE players SET balance = $1, pickaxe_levels = $2 WHERE user_id = $3", new_balance, new_levels, user_id)
                     
-                    # Анимация улучшения
                     msg = await callback.message.answer("🔨 *Тук... тук... тук...*")
                     await asyncio.sleep(0.5)
                     await msg.edit_text("⚙️ *Искры летят в разные стороны...*")
