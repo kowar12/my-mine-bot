@@ -129,14 +129,17 @@ async def init_db():
                 notifications_enabled BOOLEAN DEFAULT TRUE,
                 referrer_id BIGINT DEFAULT NULL,
                 current_location TEXT DEFAULT 'wood_mine',
-                artifacts TEXT DEFAULT '[]'
+                artifacts TEXT DEFAULT '[]',
+                lootbox_mines_today INTEGER DEFAULT 0,
+                last_lootbox_date TEXT DEFAULT ''
             )
         """)
         cols_to_add = [
             ("active_pickaxe", "TEXT"), ("pickaxe_levels", "TEXT"), ("owned_pickaxes", "TEXT"),
             ("used_promo", "BOOLEAN DEFAULT FALSE"), ("notifications_enabled", "BOOLEAN DEFAULT TRUE"),
             ("referrer_id", "BIGINT DEFAULT NULL"), ("current_location", "TEXT DEFAULT 'wood_mine'"),
-            ("artifacts", "TEXT DEFAULT '[]'")
+            ("artifacts", "TEXT DEFAULT '[]'"), ("lootbox_mines_today", "INTEGER DEFAULT 0"),
+            ("last_lootbox_date", "TEXT DEFAULT ''")
         ]
         for col, col_type in cols_to_add:
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
@@ -290,7 +293,6 @@ async def cmd_test_event(message: types.Message):
         await message.reply("Эта команда работает только в группах!")
         return
     
-    # Принудительно вызываем оба ивента
     active_drop[chat_id] = time.time()
     drop_winners[chat_id] = []
     kb1 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💰 Забрать х2!", callback_data="claim_drop")]])
@@ -369,13 +371,28 @@ async def handle_buttons(callback: types.CallbackQuery):
                         await callback.answer(f"⛔ Для этой локации нужна {PICKAXES[req_pickaxe]['name']} кирка!", show_alert=True)
                         return
 
-                cooldown = 60 if is_lootbox else 300
+                cooldown = 30 if is_lootbox else 300
                 if current_time - last_mine_time < cooldown:
                     wait_sec = round(cooldown - (current_time - last_mine_time), 1)
                     await callback.answer(f"⏳ Нужно подождать {wait_sec} сек.", show_alert=True)
                     return
 
                 if is_lootbox:
+                    # ПРОВЕРКА ЛИМИТА (3 РАЗА В ДЕНЬ)
+                    today_date = datetime.now().strftime("%Y-%m-%d")
+                    lootbox_mines = player['lootbox_mines_today'] or 0
+                    last_date = player['last_lootbox_date'] or ''
+                    
+                    if last_date != today_date:
+                        lootbox_mines = 0
+                        await conn.execute("UPDATE players SET lootbox_mines_today = 0, last_lootbox_date = $1 WHERE user_id = $2", today_date, user_id)
+                    
+                    if lootbox_mines >= 3:
+                        await callback.answer("⛔ Ты уже 3 раза копался в этой шахте сегодня! Приходи завтра.", show_alert=True)
+                        return
+
+                    await conn.execute("UPDATE players SET lootbox_mines_today = lootbox_mines + 1, last_lootbox_date = $1 WHERE user_id = $2", today_date, user_id)
+
                     rarity_roll = random.randint(1, 100)
                     if rarity_roll <= 60: target_rarity = "Обычный"
                     elif rarity_roll <= 85: target_rarity = "Редкий"
@@ -387,6 +404,7 @@ async def handle_buttons(callback: types.CallbackQuery):
 
                     new_balance = balance + found_item["price"]
                     artifacts.append(found_item)
+                    
                     await conn.execute("UPDATE players SET balance = $1, artifacts = $2, last_mine_time = $3, total_mined = total_mined + $4 WHERE user_id = $5", 
                                        new_balance, json.dumps(artifacts), current_time, found_item["price"], user_id)
 
@@ -394,7 +412,8 @@ async def handle_buttons(callback: types.CallbackQuery):
                         f"📦 Ты копался в заброшенной шахте и нашел: {found_item['emoji']} **{found_item['name']}**!\n"
                         f"✨ Редкость: {found_item['rarity']}\n"
                         f"💰 Стоимость: {found_item['price']} монет\n\n"
-                        f"Предмет добавлен в твои Артефакты! (Найдено: {len(artifacts)} шт.)"
+                        f"Предмет добавлен в твои Артефакты! (Найдено: {len(artifacts)} шт.)\n"
+                        f"*(Осталось копок сегодня: {2 - lootbox_mines})*"
                     )
                     await callback.message.answer(text, parse_mode="Markdown", reply_markup=get_game_keyboard())
 
