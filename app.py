@@ -148,12 +148,8 @@ async def init_db():
             ("artifacts", "TEXT DEFAULT '[]'"), ("owned_statuses", "TEXT DEFAULT 'Новичок'")
         ]
         for col, col_type in cols_to_add:
-            try: 
-                await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
-            except asyncpg.exceptions.DuplicateColumnError: 
-                pass
-            except Exception as e:
-                print(f"Ошибка при добавлении колонки {col}: {e}")
+            try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
+            except asyncpg.exceptions.DuplicateColumnError: pass
 
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS achievements (user_id BIGINT, ach_name TEXT, PRIMARY KEY (user_id, ach_name))")
