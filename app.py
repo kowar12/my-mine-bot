@@ -109,6 +109,14 @@ PICKAXES = {
     "diamond": {"name": "Алмазная", "base_mult": 5, "price": 100000, "emoji": "💎", "img": "pick_diamond.jpg"}
 }
 
+STATUSES = {
+    "Новичок": 0,
+    "Шахтер": 10000,
+    "Бригадир": 50000,
+    "Магнат": 200000,
+    "Владыка Шахты": 1000000
+}
+
 # --- БАЗА ДАННЫХ ---
 async def init_db():
     global db_pool
@@ -129,14 +137,15 @@ async def init_db():
                 notifications_enabled BOOLEAN DEFAULT TRUE,
                 referrer_id BIGINT DEFAULT NULL,
                 current_location TEXT DEFAULT 'wood_mine',
-                artifacts TEXT DEFAULT '[]'
+                artifacts TEXT DEFAULT '[]',
+                owned_statuses TEXT DEFAULT 'Новичок'
             )
         """)
         cols_to_add = [
             ("active_pickaxe", "TEXT"), ("pickaxe_levels", "TEXT"), ("owned_pickaxes", "TEXT"),
             ("used_promo", "BOOLEAN DEFAULT FALSE"), ("notifications_enabled", "BOOLEAN DEFAULT TRUE"),
             ("referrer_id", "BIGINT DEFAULT NULL"), ("current_location", "TEXT DEFAULT 'wood_mine'"),
-            ("artifacts", "TEXT DEFAULT '[]'")
+            ("artifacts", "TEXT DEFAULT '[]'"), ("owned_statuses", "TEXT DEFAULT 'Новичок'")
         ]
         for col, col_type in cols_to_add:
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
@@ -172,8 +181,9 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="🗺️ Локации", callback_data="locations"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Магазин", callback_data="market")],
         [InlineKeyboardButton(text="🔨 Улучшить", callback_data="upgrade_menu"), InlineKeyboardButton(text="🏅 Артефакты", callback_data="artifacts")],
-        [InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu"), InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus")],
-        [InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend"), InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
+        [InlineKeyboardButton(text="👑 Статусы", callback_data="status_menu"), InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu")],
+        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend")],
+        [InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -325,6 +335,8 @@ async def handle_buttons(callback: types.CallbackQuery):
             last_mine_time = player['last_mine_time'] or 0
             total_mined = player['total_mined'] or 0
             current_status = player['current_status'] or 'Новичок'
+            owned_statuses_str = player['owned_statuses'] or 'Новичок'
+            owned_statuses = owned_statuses_str.split(',')
             current_location = player['current_location'] or 'wood_mine'
             artifacts_str = player['artifacts'] or '[]'
             try: artifacts = json.loads(artifacts_str)
@@ -432,6 +444,52 @@ async def handle_buttons(callback: types.CallbackQuery):
                         await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
                     except Exception:
                         await callback.message.answer(text, reply_markup=get_game_keyboard())
+
+            elif action == "status_menu":
+                text = f"👑 **Статусы**\n\nТвой текущий статус: **{current_status}**\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить статус или надеть купленный:"
+                buttons = []
+                
+                # Кнопки покупки
+                for status_name, price in STATUSES.items():
+                    if status_name == "Новичок": continue
+                    if status_name in owned_statuses:
+                        buttons.append([InlineKeyboardButton(text=f"✅ Надеть {status_name}", callback_data=f"set_status_{status_name}")])
+                    else:
+                        buttons.append([InlineKeyboardButton(text=f"🛒 Купить {status_name} за {price}", callback_data=f"buy_status_{status_name}")])
+                        
+                buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
+                
+                try:
+                    photo = FSInputFile("status.jpg")
+                    await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+                except Exception:
+                    await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+            elif action.startswith("buy_status_"):
+                new_status = action.replace("buy_status_", "")
+                price = STATUSES.get(new_status, 0)
+                
+                if new_status in owned_statuses:
+                    await callback.answer("У тебя уже есть этот статус!", show_alert=True)
+                    return
+
+                if balance >= price:
+                    new_balance = balance - price
+                    new_owned = owned_statuses_str + f",{new_status}"
+                    await conn.execute("UPDATE players SET balance = $1, owned_statuses = $2, current_status = $3 WHERE user_id = $4", new_balance, new_owned, new_status, user_id)
+                    await callback.answer(f"🎉 Ты купил статус «{new_status}» и надел его!", show_alert=True)
+                    await callback.message.answer(f"👑 Поздравляю! Теперь твой статус: **{new_status}**", parse_mode="Markdown", reply_markup=get_game_keyboard())
+                else:
+                    await callback.answer(f"Нужно {price} монет!", show_alert=True)
+
+            elif action.startswith("set_status_"):
+                new_status = action.replace("set_status_", "")
+                if new_status in owned_statuses:
+                    await conn.execute("UPDATE players SET current_status = $1 WHERE user_id = $2", new_status, user_id)
+                    await callback.answer(f"Ты надел статус «{new_status}»!", show_alert=True)
+                    await callback.message.answer("👑 Статус обновлен.", reply_markup=get_game_keyboard())
+                else:
+                    await callback.answer("У тебя нет этого статуса!", show_alert=True)
 
             elif action == "locations":
                 text = f"🗺️ **Выбор локации**\n\nТекущая: {LOCATIONS[current_location]['emoji']} {LOCATIONS[current_location]['name']}\n\nДоступные:"
@@ -661,7 +719,7 @@ async def cmd_give_ach(message: types.Message):
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT user_id FROM players WHERE username = $1", target_username)
             if not player:
-                await message.reply(f"Игрок с ником @{target_username} не найден в базе. (Может он не писал /start?)")
+                await message.reply(f"Игрок с ником @{target_username} не найден в базе.")
                 return
                 
             existing = await conn.fetchrow("SELECT 1 FROM achievements WHERE user_id = $1 AND ach_name = $2", player['user_id'], ach_name)
@@ -675,6 +733,45 @@ async def cmd_give_ach(message: types.Message):
         
     except Exception as e:
         await message.reply(f"⚠️ Ошибка при выдаче: {e}")
+
+@dp.message(Command("give_status"))
+async def cmd_give_status(message: types.Message):
+    try:
+        ADMIN_ID = 6564750882
+        if message.from_user.id != ADMIN_ID:
+            await message.reply("У тебя нет прав для этой команды.")
+            return
+            
+        args = message.text.split(maxsplit=2)
+        if len(args) < 3:
+            await message.reply("Используй: /give_status @username Название статуса")
+            return
+            
+        target_username = args[1].replace("@", "").strip()
+        status_name = args[2].strip()
+        
+        if status_name not in STATUSES:
+            await message.reply(f"Такого статуса нет. Доступные: {', '.join(STATUSES.keys())}")
+            return
+        
+        async with db_pool.acquire() as conn:
+            player = await conn.fetchrow("SELECT user_id, owned_statuses FROM players WHERE username = $1", target_username)
+            if not player:
+                await message.reply(f"Игрок с ником @{target_username} не найден.")
+                return
+                
+            owned_str = player['owned_statuses'] or 'Новичок'
+            if status_name in owned_str.split(','):
+                await message.reply(f"У игрока @{target_username} уже есть статус «{status_name}».")
+                return
+                
+            new_owned = owned_str + f",{status_name}"
+            await conn.execute("UPDATE players SET owned_statuses = $1 WHERE user_id = $2", new_owned, player['user_id'])
+            
+        await message.reply(f"✅ Статус «{status_name}» успешно выдан игроку @{target_username}!")
+        
+    except Exception as e:
+        await message.reply(f"⚠️ Ошибка: {e}")
 
 @dp.message(Command("promo"))
 async def cmd_promo(message: types.Message):
