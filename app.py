@@ -138,14 +138,22 @@ async def init_db():
                 referrer_id BIGINT DEFAULT NULL,
                 current_location TEXT DEFAULT 'wood_mine',
                 artifacts TEXT DEFAULT '[]',
-                owned_statuses TEXT DEFAULT 'Новичок'
+                owned_statuses TEXT DEFAULT 'Новичок',
+                daily_quest_date TEXT DEFAULT '',
+                daily_quest_progress INTEGER DEFAULT 0,
+                daily_quest_claimed BOOLEAN DEFAULT FALSE,
+                boost_until DOUBLE PRECISION DEFAULT 0,
+                double_boost_until DOUBLE PRECISION DEFAULT 0
             )
         """)
         cols_to_add = [
             ("active_pickaxe", "TEXT"), ("pickaxe_levels", "TEXT"), ("owned_pickaxes", "TEXT"),
             ("used_promo", "BOOLEAN DEFAULT FALSE"), ("notifications_enabled", "BOOLEAN DEFAULT TRUE"),
             ("referrer_id", "BIGINT DEFAULT NULL"), ("current_location", "TEXT DEFAULT 'wood_mine'"),
-            ("artifacts", "TEXT DEFAULT '[]'"), ("owned_statuses", "TEXT DEFAULT 'Новичок'")
+            ("artifacts", "TEXT DEFAULT '[]'"), ("owned_statuses", "TEXT DEFAULT 'Новичок'"),
+            ("daily_quest_date", "TEXT DEFAULT ''"), ("daily_quest_progress", "INTEGER DEFAULT 0"),
+            ("daily_quest_claimed", "BOOLEAN DEFAULT FALSE"), ("boost_until", "DOUBLE PRECISION DEFAULT 0"),
+            ("double_boost_until", "DOUBLE PRECISION DEFAULT 0")
         ]
         for col, col_type in cols_to_add:
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
@@ -181,9 +189,9 @@ def get_game_keyboard():
         [InlineKeyboardButton(text="🗺️ Локации", callback_data="locations"), InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")],
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), InlineKeyboardButton(text="🛒 Магазин", callback_data="market")],
         [InlineKeyboardButton(text="🔨 Улучшить", callback_data="upgrade_menu"), InlineKeyboardButton(text="🏅 Артефакты", callback_data="artifacts")],
-        [InlineKeyboardButton(text="👑 Статусы", callback_data="status_menu"), InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus"), InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend")],
-        [InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
+        [InlineKeyboardButton(text="👑 Статусы", callback_data="status_menu"), InlineKeyboardButton(text="⚡ Бустеры", callback_data="boosters_menu")],
+        [InlineKeyboardButton(text="🏆 Топы", callback_data="top_menu"), InlineKeyboardButton(text="🎁 Бонус", callback_data="bonus")],
+        [InlineKeyboardButton(text="👥 Позвать друга", callback_data="invite_friend"), InlineKeyboardButton(text="📰 Новости бота", url=CHANNEL_URL)]
     ])
 
 def calculate_passive_income(user_id, balance, last_seen):
@@ -339,6 +347,12 @@ async def handle_buttons(callback: types.CallbackQuery):
             owned_statuses = owned_statuses_str.split(',')
             current_location = player['current_location'] or 'wood_mine'
             artifacts_str = player['artifacts'] or '[]'
+            boost_until = player['boost_until'] or 0
+            double_boost_until = player['double_boost_until'] or 0
+            daily_quest_date = player['daily_quest_date'] or ''
+            daily_quest_progress = player['daily_quest_progress'] or 0
+            daily_quest_claimed = player['daily_quest_claimed'] or False
+            
             try: artifacts = json.loads(artifacts_str)
             except: artifacts = []
             
@@ -370,6 +384,13 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await callback.answer("Тайник уже закрыт!", show_alert=True)
                 return
 
+            # ЕЖЕДНЕВНЫЙ КВЕСТ
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            if daily_quest_date != today_date:
+                daily_quest_progress = 0
+                daily_quest_claimed = False
+                await conn.execute("UPDATE players SET daily_quest_date = $1, daily_quest_progress = 0, daily_quest_claimed = FALSE WHERE user_id = $2", today_date, user_id)
+
             # ОБЫЧНЫЕ ДЕЙСТВИЯ
             if action == "mine":
                 loc_data = LOCATIONS[current_location]
@@ -381,21 +402,24 @@ async def handle_buttons(callback: types.CallbackQuery):
                         await callback.answer(f"⛔ Для этой локации нужна {PICKAXES[req_pickaxe]['name']} кирка!", show_alert=True)
                         return
 
-                cooldown = 30 if is_lootbox else 300
-                if current_time - last_mine_time < cooldown:
-                    wait_sec = round(cooldown - (current_time - last_mine_time), 1)
-                    await callback.answer(f"⏳ Нужно подождать {wait_sec} сек.", show_alert=True)
+                # Базовый кулдаун 2 минуты (120 сек), но если есть бустер - 30 сек
+                base_cooldown = 120 
+                if current_time < boost_until:
+                    base_cooldown = 30
+
+                if is_lootbox:
+                    base_cooldown = 10800 # 3 часа для лутбокса всегда
+
+                if current_time - last_mine_time < base_cooldown:
+                    wait_sec = round(base_cooldown - (current_time - last_mine_time), 1)
+                    hours = int(wait_sec // 3600)
+                    minutes = int((wait_sec % 3600) // 60)
+                    secs = int(wait_sec % 60)
+                    await callback.answer(f"⏳ Нужно подождать {hours} ч. {minutes} мин. {secs} сек.", show_alert=True)
                     return
 
                 if is_lootbox:
-                    cooldown_lootbox = 10800 # 3 часа
-                    if current_time - last_mine_time < cooldown_lootbox:
-                        wait_sec = round(cooldown_lootbox - (current_time - last_mine_time), 1)
-                        hours = int(wait_sec // 3600)
-                        minutes = int((wait_sec % 3600) // 60)
-                        await callback.answer(f"⛔ Ты уже копался в этой шахте! Следующая попытка через {hours} ч. {minutes} мин.", show_alert=True)
-                        return
-
+                    # ЛУТБОКС
                     rarity_roll = random.randint(1, 100)
                     if rarity_roll <= 60: target_rarity = "Обычный"
                     elif rarity_roll <= 85: target_rarity = "Редкий"
@@ -426,30 +450,85 @@ async def handle_buttons(callback: types.CallbackQuery):
                     base_mult = PICKAXES[active_pickaxe]["base_mult"]
                     total_mult = base_mult + (p_lvl - 1) * 0.5
 
+                    # Бустер х2
+                    if current_time < double_boost_until:
+                        total_mult *= 2
+
                     mined = int(ore["reward"] * total_mult)
                     new_balance = balance + mined
                     new_total = total_mined + mined
+                    
+                    # Прогресс квеста
+                    daily_quest_progress += mined
 
-                    await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3 WHERE user_id = $4", new_balance, current_time, new_total, user_id)
+                    await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3, daily_quest_progress = $4 WHERE user_id = $5", 
+                                       new_balance, current_time, new_total, daily_quest_progress, user_id)
                     if chat_id < 0:
                         await conn.execute("UPDATE chats SET total_balance = total_balance + $1 WHERE chat_id = $2", mined, chat_id)
 
                     text = (
                         f"⛏️ {callback.from_user.first_name} накопал в {loc_data['name']}: {ore['emoji']} {ore['name']}!\n"
-                        f"💰 Получено: {mined} монет (x{total_mult})\n"
-                        f"💳 Баланс: {new_balance}"
+                        f"💰 Получено: {mined} монет (x{total_mult:.1f})\n"
+                        f"💳 Баланс: {new_balance}\n"
                     )
+                    if current_time < boost_until:
+                        text += f"⚡ *Бустер активен! Кулдаун 30 сек.*\n"
+                    
                     try:
                         photo = FSInputFile(ore["img"])
                         await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
                     except Exception:
                         await callback.message.answer(text, reply_markup=get_game_keyboard())
 
+            elif action == "boosters_menu":
+                text = f"⚡ **Магазин бустеров**\n\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить временные усиления:"
+                
+                # Проверяем активность
+                b1_status = "Активен!" if current_time < boost_until else "Купить за 1000"
+                b2_status = "Активен!" if current_time < double_boost_until else "Купить за 2000"
+                
+                buttons = [
+                    [InlineKeyboardButton(text=f"⚡ Энергетик (30 сек кд) — {b1_status}", callback_data="buy_boost_1")],
+                    [InlineKeyboardButton(text=f"💎 Двойная добыча — {b2_status}", callback_data="buy_boost_2")],
+                    [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
+                ]
+                
+                await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+            
+            elif action == "buy_boost_1":
+                if current_time < boost_until:
+                    await callback.answer("У тебя уже активен этот бустер!", show_alert=True)
+                    return
+                if balance >= 1000:
+                    new_balance = balance - 1000
+                    await conn.execute("UPDATE players SET balance = $1, boost_until = $2 WHERE user_id = $3", new_balance, current_time + 3600, user_id)
+                    await callback.answer("⚡ Энергетик активирован на 1 час! Кулдаун копки теперь 30 секунд.", show_alert=True)
+                else:
+                    await callback.answer("Нужно 1000 монет!", show_alert=True)
+
+            elif action == "buy_boost_2":
+                if current_time < double_boost_until:
+                    await callback.answer("У тебя уже активен этот бустер!", show_alert=True)
+                    return
+                if balance >= 2000:
+                    new_balance = balance - 2000
+                    await conn.execute("UPDATE players SET balance = $1, double_boost_until = $2 WHERE user_id = $3", new_balance, current_time + 3600, user_id)
+                    await callback.answer("💎 Двойная добыча активирована на 1 час!", show_alert=True)
+                else:
+                    await callback.answer("Нужно 2000 монет!", show_alert=True)
+
+            elif action == "claim_quest":
+                if daily_quest_progress >= 1000 and not daily_quest_claimed:
+                    await conn.execute("UPDATE players SET balance = balance + 1000, daily_quest_claimed = TRUE WHERE user_id = $1", user_id)
+                    await callback.answer("🎉 Квест выполнен! Награда: +1000 монет.", show_alert=True)
+                    await callback.message.answer("Жми копать, чтобы продолжить!", reply_markup=get_game_keyboard())
+                else:
+                    await callback.answer("Квест еще не выполнен или награда уже забрана.", show_alert=True)
+
             elif action == "status_menu":
                 text = f"👑 **Статусы**\n\nТвой текущий статус: **{current_status}**\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить статус или надеть купленный:"
                 buttons = []
                 
-                # Кнопки покупки
                 for status_name, price in STATUSES.items():
                     if status_name == "Новичок": continue
                     if status_name in owned_statuses:
@@ -659,7 +738,17 @@ async def handle_buttons(callback: types.CallbackQuery):
                 base_mult = PICKAXES[active_pickaxe]["base_mult"]
                 total_mult = base_mult + (p_lvl - 1) * 0.5
                 
-                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_menu")]])
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🎯 Забрать награду за квест", callback_data="claim_quest")],
+                    [InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_menu")]
+                ])
+                
+                quest_text = ""
+                if daily_quest_progress >= 1000:
+                    quest_text = "\n🎯 **Квест выполнен!** Забери награду."
+                else:
+                    quest_text = f"\n🎯 **Квест дня:** Накопай 1000 монет. ({daily_quest_progress}/1000)"
+
                 await callback.message.answer(
                     f"👤 Профиль: {callback.from_user.first_name}\n"
                     f"🎖 Статус: {current_status}\n"
@@ -667,7 +756,8 @@ async def handle_buttons(callback: types.CallbackQuery):
                     f"📍 Локация: {LOCATIONS[current_location]['name']}\n"
                     f"💰 Баланс: {balance} монет\n"
                     f"⛏️ Кирка: {PICKAXES[active_pickaxe]['emoji']} {PICKAXES[active_pickaxe]['name']} (Ур. {p_lvl}, x{total_mult})\n"
-                    f"🏅 Артефактов: {len(artifacts)} шт.", 
+                    f"🏅 Артефактов: {len(artifacts)} шт."
+                    f"{quest_text}", 
                     reply_markup=kb
                 )
 
@@ -690,7 +780,7 @@ async def handle_buttons(callback: types.CallbackQuery):
 
             elif action == "top_chats":
                 rows = await conn.fetch("SELECT chat_title, total_balance FROM chats ORDER BY total_balance DESC LIMIT 5")
-                text = "🏰 Топ бесед:\n" + "\n".join([f"{i}. {r['chat_title']} — {r['total_balance']}" for i, r in enumerate(rows, 1)])
+                text = "🏰 Топ бесед (по общему балансу за все время):\n" + "\n".join([f"{i}. {r['chat_title']} — {r['total_balance']}" for i, r in enumerate(rows, 1)])
                 await callback.message.answer(text)
 
     except Exception as e:
