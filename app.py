@@ -146,6 +146,17 @@ async def init_db():
                 double_boost_until DOUBLE PRECISION DEFAULT 0
             )
         """)
+        # Таблица для активности
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                username TEXT,
+                action TEXT,
+                timestamp DOUBLE PRECISION
+            )
+        """)
+        
         cols_to_add = [
             ("active_pickaxe", "TEXT"), ("pickaxe_levels", "TEXT"), ("owned_pickaxes", "TEXT"),
             ("used_promo", "BOOLEAN DEFAULT FALSE"), ("notifications_enabled", "BOOLEAN DEFAULT TRUE"),
@@ -322,6 +333,7 @@ async def cmd_test_event(message: types.Message):
 async def handle_buttons(callback: types.CallbackQuery):
     try:
         user_id = callback.from_user.id
+        username = callback.from_user.username or callback.from_user.first_name
         chat_id = callback.message.chat.id
         action = callback.data
 
@@ -330,6 +342,10 @@ async def handle_buttons(callback: types.CallbackQuery):
             return
 
         async with db_pool.acquire() as conn:
+            # ЛОГИРУЕМ НАЖАТИЕ КНОПКИ
+            await conn.execute("INSERT INTO activity_logs (user_id, username, action, timestamp) VALUES ($1, $2, $3, $4)", 
+                               user_id, username, action, time.time())
+
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             if not player:
                 await callback.answer("Сначала напиши /start")
@@ -862,6 +878,54 @@ async def cmd_give_status(message: types.Message):
         
     except Exception as e:
         await message.reply(f"⚠️ Ошибка: {e}")
+
+@dp.message(Command("activity"))
+async def cmd_activity(message: types.Message):
+    try:
+        ADMIN_ID = 6564750882
+        if message.from_user.id != ADMIN_ID:
+            await message.reply("У тебя нет прав для этой команды.")
+            return
+
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        
+        async with db_pool.acquire() as conn:
+            # Всего кликов за сегодня
+            total_clicks = await conn.fetchval("SELECT COUNT(*) FROM activity_logs WHERE timestamp >= $1", today_start)
+            
+            # Топ кнопок за сегодня
+            top_buttons = await conn.fetch("""
+                SELECT action, COUNT(*) as count 
+                FROM activity_logs 
+                WHERE timestamp >= $1 
+                GROUP BY action 
+                ORDER BY count DESC LIMIT 5
+            """, today_start)
+            
+            # Топ активных юзеров за сегодня
+            top_users = await conn.fetch("""
+                SELECT username, COUNT(*) as count 
+                FROM activity_logs 
+                WHERE timestamp >= $1 
+                GROUP BY username 
+                ORDER BY count DESC LIMIT 5
+            """, today_start)
+
+        text = f"📈 **Активность за сегодня**\n\n"
+        text += f"👆 Всего нажатий: **{total_clicks}**\n\n"
+        
+        text += f"🔥 **Топ кнопок:**\n"
+        for i, row in enumerate(top_buttons, 1):
+            text += f"{i}. `{row['action']}` — {row['count']} раз\n"
+            
+        text += f"\n🏃 **Топ активных юзеров:**\n"
+        for i, row in enumerate(top_users, 1):
+            text += f"{i}. @{row['username']} — {row['count']} нажатий\n"
+
+        await message.reply(text, parse_mode="Markdown")
+
+    except Exception as e:
+        await message.reply(f"⚠️ Ошибка в /activity: {e}")
 
 @dp.message(Command("promo"))
 async def cmd_promo(message: types.Message):
