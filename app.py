@@ -146,7 +146,7 @@ async def init_db():
                 double_boost_until DOUBLE PRECISION DEFAULT 0
             )
         """)
-        # Таблица для активности
+        # Таблица активности (БЕЗ chat_id, как было)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS activity_logs (
                 id SERIAL PRIMARY KEY,
@@ -342,7 +342,7 @@ async def handle_buttons(callback: types.CallbackQuery):
             return
 
         async with db_pool.acquire() as conn:
-            # ЛОГИРУЕМ НАЖАТИЕ КНОПКИ
+            # ЛОГИРУЕМ НАЖАТИЕ КНОПКИ (без chat_id)
             await conn.execute("INSERT INTO activity_logs (user_id, username, action, timestamp) VALUES ($1, $2, $3, $4)", 
                                user_id, username, action, time.time())
 
@@ -418,13 +418,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                         await callback.answer(f"⛔ Для этой локации нужна {PICKAXES[req_pickaxe]['name']} кирка!", show_alert=True)
                         return
 
-                # Базовый кулдаун 2 минуты (120 сек), но если есть бустер - 30 сек
                 base_cooldown = 120 
                 if current_time < boost_until:
                     base_cooldown = 30
 
                 if is_lootbox:
-                    base_cooldown = 10800 # 3 часа для лутбокса всегда
+                    base_cooldown = 10800 
 
                 if current_time - last_mine_time < base_cooldown:
                     wait_sec = round(base_cooldown - (current_time - last_mine_time), 1)
@@ -435,7 +434,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     return
 
                 if is_lootbox:
-                    # ЛУТБОКС
                     rarity_roll = random.randint(1, 100)
                     if rarity_roll <= 60: target_rarity = "Обычный"
                     elif rarity_roll <= 85: target_rarity = "Редкий"
@@ -466,7 +464,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     base_mult = PICKAXES[active_pickaxe]["base_mult"]
                     total_mult = base_mult + (p_lvl - 1) * 0.5
 
-                    # Бустер х2
                     if current_time < double_boost_until:
                         total_mult *= 2
 
@@ -474,7 +471,6 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_balance = balance + mined
                     new_total = total_mined + mined
                     
-                    # Прогресс квеста
                     daily_quest_progress += mined
 
                     await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3, daily_quest_progress = $4 WHERE user_id = $5", 
@@ -499,7 +495,6 @@ async def handle_buttons(callback: types.CallbackQuery):
             elif action == "boosters_menu":
                 text = f"⚡ **Магазин бустеров**\n\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить временные усиления:"
                 
-                # Проверяем активность
                 b1_status = "Активен!" if current_time < boost_until else "Купить за 1000"
                 b2_status = "Активен!" if current_time < double_boost_until else "Купить за 2000"
                 
@@ -890,10 +885,8 @@ async def cmd_activity(message: types.Message):
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         
         async with db_pool.acquire() as conn:
-            # Всего кликов за сегодня
             total_clicks = await conn.fetchval("SELECT COUNT(*) FROM activity_logs WHERE timestamp >= $1", today_start)
             
-            # Топ кнопок за сегодня
             top_buttons = await conn.fetch("""
                 SELECT action, COUNT(*) as count 
                 FROM activity_logs 
@@ -902,7 +895,6 @@ async def cmd_activity(message: types.Message):
                 ORDER BY count DESC LIMIT 5
             """, today_start)
             
-            # Топ активных юзеров за сегодня
             top_users = await conn.fetch("""
                 SELECT username, COUNT(*) as count 
                 FROM activity_logs 
@@ -911,18 +903,19 @@ async def cmd_activity(message: types.Message):
                 ORDER BY count DESC LIMIT 5
             """, today_start)
 
-        text = f"📈 **Активность за сегодня**\n\n"
-        text += f"👆 Всего нажатий: **{total_clicks}**\n\n"
+        text = f"📈 Активность за сегодня\n\n"
+        text += f"👆 Всего нажатий: {total_clicks}\n\n"
         
-        text += f"🔥 **Топ кнопок:**\n"
+        text += f"🔥 Топ кнопок:\n"
         for i, row in enumerate(top_buttons, 1):
-            text += f"{i}. `{row['action']}` — {row['count']} раз\n"
+            text += f"{i}. {row['action']} — {row['count']} раз\n"
             
-        text += f"\n🏃 **Топ активных юзеров:**\n"
+        text += f"\n🏃 Топ активных юзеров:\n"
         for i, row in enumerate(top_users, 1):
             text += f"{i}. @{row['username']} — {row['count']} нажатий\n"
 
-        await message.reply(text, parse_mode="Markdown")
+        # БЕЗ Markdown, чтобы не было ошибки с подчеркиваниями
+        await message.reply(text)
 
     except Exception as e:
         await message.reply(f"⚠️ Ошибка в /activity: {e}")
