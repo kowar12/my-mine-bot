@@ -254,7 +254,7 @@ async def trigger_golden_vein(chat_id):
 # --- НАПОМИНАНИЕ О КОПКЕ В ЧАТАХ ---
 async def check_chat_activity():
     while True:
-        await asyncio.sleep(60)  # ТЕСТОВЫЙ ИНТЕРВАЛ: проверяем раз в 1 минуту (потом поменяй на 3600)
+        await asyncio.sleep(3600)  # Проверяем раз в 1 час (3600 секунд)
         try:
             async with db_pool.acquire() as conn:
                 chats = await conn.fetch("SELECT chat_id, last_mine_in_chat FROM chats WHERE chat_id < 0")
@@ -264,7 +264,8 @@ async def check_chat_activity():
                     last_mine = chat['last_mine_in_chat'] or 0
                     current_time = time.time()
                     
-                    if current_time - last_mine > 60:  # ТЕСТОВЫЙ ИНТЕРВАЛ: 1 минута (потом поменяй на 21600)
+                    # Если прошло больше 6 часов (21600 секунд)
+                    if current_time - last_mine > 21600:
                         try:
                             photo = FSInputFile("start.jpg")
                             await bot.send_photo(
