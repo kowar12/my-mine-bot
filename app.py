@@ -146,7 +146,6 @@ async def init_db():
                 double_boost_until DOUBLE PRECISION DEFAULT 0
             )
         """)
-        # Таблица активности (БЕЗ chat_id, как было)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS activity_logs (
                 id SERIAL PRIMARY KEY,
@@ -170,7 +169,16 @@ async def init_db():
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
             except asyncpg.exceptions.DuplicateColumnError: pass
 
+        # Создаем таблицу чатов с новым полем last_mine_in_chat
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
+        
+        # Принудительно проверяем и добавляем колонку
+        try:
+            await conn.execute("ALTER TABLE chats ADD COLUMN IF NOT EXISTS last_mine_in_chat DOUBLE PRECISION DEFAULT 0")
+            print("✅ Колонка last_mine_in_chat готова.")
+        except Exception as e:
+            print(f"⚠️ Ошибка при создании колонки: {e}")
+        
         await conn.execute("CREATE TABLE IF NOT EXISTS achievements (user_id BIGINT, ach_name TEXT, PRIMARY KEY (user_id, ach_name))")
 
 def get_player_level(total_mined): return (total_mined // 500) + 1
@@ -242,6 +250,34 @@ async def trigger_golden_vein(chat_id):
         await bot.send_message(chat_id, "💎 **ЗОЛОТАЯ ЖИЛА!**\n\nВ шахте обнаружен огромный самородок! Кто первый нажмет кнопку — заберет **5000 монет**!", reply_markup=kb, parse_mode="Markdown")
     except Exception:
         pass
+
+# --- НАПОМИНАНИЕ О КОПКЕ В ЧАТАХ ---
+async def check_chat_activity():
+    while True:
+        await asyncio.sleep(60)  # ТЕСТОВЫЙ ИНТЕРВАЛ: проверяем раз в 1 минуту (потом поменяй на 3600)
+        try:
+            async with db_pool.acquire() as conn:
+                chats = await conn.fetch("SELECT chat_id, last_mine_in_chat FROM chats WHERE chat_id < 0")
+                
+                for chat in chats:
+                    chat_id = chat['chat_id']
+                    last_mine = chat['last_mine_in_chat'] or 0
+                    current_time = time.time()
+                    
+                    if current_time - last_mine > 60:  # ТЕСТОВЫЙ ИНТЕРВАЛ: 1 минута (потом поменяй на 21600)
+                        try:
+                            photo = FSInputFile("start.jpg")
+                            await bot.send_photo(
+                                chat_id, 
+                                photo=photo, 
+                                caption="⛏️ **Эй, шахтеры!**\n\nВ шахте давно тихо. Самое время копнуть и обогнать другие чаты в Топе!\n\nЖмите «⛏️ КОПАТЬ»!"
+                            )
+                            await conn.execute("UPDATE chats SET last_mine_in_chat = $1 WHERE chat_id = $2", current_time, chat_id)
+                            print(f"✅ Отправлено напоминание в чат {chat_id}")
+                        except Exception as e:
+                            print(f"❌ Не удалось отправить в чат {chat_id}: {e}")
+        except Exception as e:
+            print(f"Ошибка в фоне: {e}")
 
 # --- ОБРАБОТЧИКИ ---
 @dp.message(Command("start", ignore_mention=True))
@@ -342,7 +378,6 @@ async def handle_buttons(callback: types.CallbackQuery):
             return
 
         async with db_pool.acquire() as conn:
-            # ЛОГИРУЕМ НАЖАТИЕ КНОПКИ (без chat_id)
             await conn.execute("INSERT INTO activity_logs (user_id, username, action, timestamp) VALUES ($1, $2, $3, $4)", 
                                user_id, username, action, time.time())
 
@@ -374,7 +409,6 @@ async def handle_buttons(callback: types.CallbackQuery):
             
             current_time = time.time()
 
-            # ОБРАБОТКА ИВЕНТОВ
             if action == "claim_vein":
                 if chat_id in active_golden_vein and (current_time - active_golden_vein[chat_id] < 300):
                     del active_golden_vein[chat_id]
@@ -400,14 +434,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await callback.answer("Тайник уже закрыт!", show_alert=True)
                 return
 
-            # ЕЖЕДНЕВНЫЙ КВЕСТ
             today_date = datetime.now().strftime("%Y-%m-%d")
             if daily_quest_date != today_date:
                 daily_quest_progress = 0
                 daily_quest_claimed = False
                 await conn.execute("UPDATE players SET daily_quest_date = $1, daily_quest_progress = 0, daily_quest_claimed = FALSE WHERE user_id = $2", today_date, user_id)
 
-            # ОБЫЧНЫЕ ДЕЙСТВИЯ
             if action == "mine":
                 loc_data = LOCATIONS[current_location]
                 is_lootbox = loc_data.get("is_lootbox", False)
@@ -476,7 +508,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3, daily_quest_progress = $4 WHERE user_id = $5", 
                                        new_balance, current_time, new_total, daily_quest_progress, user_id)
                     if chat_id < 0:
-                        await conn.execute("UPDATE chats SET total_balance = total_balance + $1 WHERE chat_id = $2", mined, chat_id)
+                        await conn.execute("UPDATE chats SET total_balance = total_balance + $1, last_mine_in_chat = $2 WHERE chat_id = $3", mined, current_time, chat_id)
 
                     text = (
                         f"⛏️ {callback.from_user.first_name} накопал в {loc_data['name']}: {ore['emoji']} {ore['name']}!\n"
@@ -914,7 +946,6 @@ async def cmd_activity(message: types.Message):
         for i, row in enumerate(top_users, 1):
             text += f"{i}. @{row['username']} — {row['count']} нажатий\n"
 
-        # БЕЗ Markdown, чтобы не было ошибки с подчеркиваниями
         await message.reply(text)
 
     except Exception as e:
@@ -1032,6 +1063,8 @@ async def main():
     await init_db()
     print("Бот запущен (Polling)!")
     await bot.delete_webhook(drop_pending_updates=False)
+    # Запускаем фоновую задачу напоминаний
+    asyncio.create_task(check_chat_activity())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
