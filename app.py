@@ -28,6 +28,12 @@ active_golden_vein = {}
 active_drop = {} 
 drop_winners = {} 
 
+# --- НАСТРОЙКИ АКЦИИ (30К НА 2 ДНЯ) ---
+# Укажи дату окончания акции (год, месяц, день, час, минута)
+# Например, если сегодня 28 ноября 2026, а акция на 2 дня, то ставим 30 ноября 23:59
+PROMO_END_DATE = datetime(2026, 11, 30, 23, 59, 59) 
+START_BONUS = 30000 
+
 # --- СЕРВЕР ДЛЯ RENDER ---
 app = Flask(__name__)
 
@@ -47,12 +53,12 @@ def generate_loot_items():
               "Веревка", "Кусок мыла", "Старый носок", "Пластиковая бутылка", "Обломок доски"]
     for i in range(60):
         items.append({"name": random.choice(common) + f" #{i+1}", "rarity": "Обычный", "emoji": "⚙️", "price": random.randint(5, 20)})
-    
+
     rare = ["Старая монета", "Серебряное кольцо", "Кусок карты", "Странный амулет", "Бронзовый ключ",
             "Ржавый кинжал", "Фляга", "Осколок кристалла", "Старая книга", "Компас"]
     for i in range(25):
         items.append({"name": random.choice(rare) + f" #{i+1}", "rarity": "Редкий", "emoji": "💠", "price": random.randint(100, 300)})
-        
+
     epic = ["Древний свиток", "Золотая статуэтка", "Кристалл душ", "Руна силы", "Корона мини-короля",
             "Перо феникса", "Глаз провидца", "Клык дракона", "Сфера тьмы", "Часы времени"]
     for i in range(10):
@@ -155,7 +161,7 @@ async def init_db():
                 timestamp DOUBLE PRECISION
             )
         """)
-        
+
         cols_to_add = [
             ("active_pickaxe", "TEXT"), ("pickaxe_levels", "TEXT"), ("owned_pickaxes", "TEXT"),
             ("used_promo", "BOOLEAN DEFAULT FALSE"), ("notifications_enabled", "BOOLEAN DEFAULT TRUE"),
@@ -169,16 +175,14 @@ async def init_db():
             try: await conn.execute(f"ALTER TABLE players ADD COLUMN {col} {col_type}")
             except asyncpg.exceptions.DuplicateColumnError: pass
 
-        # Создаем таблицу чатов с новым полем last_mine_in_chat
         await conn.execute("CREATE TABLE IF NOT EXISTS chats (chat_id BIGINT PRIMARY KEY, chat_title TEXT, total_balance INTEGER DEFAULT 0)")
-        
-        # Принудительно проверяем и добавляем колонку
+
         try:
             await conn.execute("ALTER TABLE chats ADD COLUMN IF NOT EXISTS last_mine_in_chat DOUBLE PRECISION DEFAULT 0")
             print("✅ Колонка last_mine_in_chat готова.")
         except Exception as e:
             print(f"⚠️ Ошибка при создании колонки: {e}")
-        
+
         await conn.execute("CREATE TABLE IF NOT EXISTS achievements (user_id BIGINT, ach_name TEXT, PRIMARY KEY (user_id, ach_name))")
 
 def get_player_level(total_mined): return (total_mined // 500) + 1
@@ -254,17 +258,16 @@ async def trigger_golden_vein(chat_id):
 # --- НАПОМИНАНИЕ О КОПКЕ В ЧАТАХ ---
 async def check_chat_activity():
     while True:
-        await asyncio.sleep(3600)  # Проверяем раз в 1 час (3600 секунд)
+        await asyncio.sleep(3600) 
         try:
             async with db_pool.acquire() as conn:
                 chats = await conn.fetch("SELECT chat_id, last_mine_in_chat FROM chats WHERE chat_id < 0")
-                
+
                 for chat in chats:
                     chat_id = chat['chat_id']
                     last_mine = chat['last_mine_in_chat'] or 0
                     current_time = time.time()
-                    
-                    # Если прошло больше 6 часов (21600 секунд)
+
                     if current_time - last_mine > 21600:
                         try:
                             photo = FSInputFile("start.jpg")
@@ -288,7 +291,7 @@ async def cmd_start(message: types.Message):
         username = message.from_user.username or message.from_user.first_name
         chat_id = message.chat.id
         chat_title = message.chat.title or "Личный чат"
-        
+
         args = message.text.split()
         referrer_id = None
         if len(args) > 1 and args[1].startswith("ref_"):
@@ -296,15 +299,24 @@ async def cmd_start(message: types.Message):
             except: pass
 
         is_new_chat = False
-        
+        is_promo_active = datetime.now() < PROMO_END_DATE
+
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT * FROM players WHERE user_id = $1", user_id)
             current_time = time.time()
+            
             if not player:
-                await conn.execute("INSERT INTO players (user_id, username, last_seen, referrer_id, balance) VALUES ($1, $2, $3, $4, 100)", user_id, username, current_time, referrer_id)
-                balance, total_mined = 100, 0
-                offline_text = "\n\n🎁 Тебе начислено **100 монет** на старт!"
-                
+                if is_promo_active:
+                    start_balance = START_BONUS
+                    bonus_text = f"\n\n🎁 **АКЦИЯ!** Тебе начислено **{START_BONUS} монет** на старт!"
+                else:
+                    start_balance = 100
+                    bonus_text = "\n\n🎁 Тебе начислено **100 монет** на старт!"
+
+                await conn.execute("INSERT INTO players (user_id, username, last_seen, referrer_id, balance) VALUES ($1, $2, $3, $4, $5)", user_id, username, current_time, referrer_id, start_balance)
+                balance, total_mined = start_balance, 0
+                offline_text = bonus_text
+
                 if referrer_id:
                     ref_row = await conn.fetchrow("SELECT user_id FROM players WHERE user_id = $1", referrer_id)
                     if ref_row:
@@ -331,7 +343,7 @@ async def cmd_start(message: types.Message):
             asyncio.create_task(trigger_golden_vein(chat_id))
 
         level = get_player_level(total_mined)
-        
+
         caption = (
             f"⛏️ Привет, {username}!\n\n"
             f"Добро пожаловать в «Шахту»!{offline_text}\n\n"
@@ -356,12 +368,12 @@ async def cmd_test_event(message: types.Message):
     if chat_id > 0:
         await message.reply("Эта команда работает только в группах!")
         return
-    
+
     active_drop[chat_id] = time.time()
     drop_winners[chat_id] = []
     kb1 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💰 Забрать х2!", callback_data="claim_drop")]])
     await message.answer("🚨 **ТЕСТ: В шахте обнаружен тайник!**\n\nПервые 3 человека получат бонус!", reply_markup=kb1, parse_mode="Markdown")
-    
+
     active_golden_vein[chat_id] = time.time()
     kb2 = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 ЗОЛОТАЯ ЖИЛА! Забрать", callback_data="claim_vein")]])
     await message.answer("💎 **ТЕСТ: ЗОЛОТАЯ ЖИЛА!**\n\nКто первый нажмет — заберет 5000 монет!", reply_markup=kb2, parse_mode="Markdown")
@@ -404,10 +416,10 @@ async def handle_buttons(callback: types.CallbackQuery):
             daily_quest_date = player['daily_quest_date'] or ''
             daily_quest_progress = player['daily_quest_progress'] or 0
             daily_quest_claimed = player['daily_quest_claimed'] or False
-            
+
             try: artifacts = json.loads(artifacts_str)
             except: artifacts = []
-            
+
             current_time = time.time()
 
             if action == "claim_vein":
@@ -427,7 +439,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     if len(drop_winners[chat_id]) >= 3:
                         await callback.answer("Все бонусы уже разобрали!", show_alert=True)
                         return
-                    
+
                     drop_winners[chat_id].append(user_id)
                     await conn.execute("UPDATE players SET balance = balance + 500 WHERE user_id = $1", user_id)
                     await callback.answer("🎉 Ты успел! Тебе начислено 500 монет!", show_alert=True)
@@ -444,7 +456,7 @@ async def handle_buttons(callback: types.CallbackQuery):
             if action == "mine":
                 loc_data = LOCATIONS[current_location]
                 is_lootbox = loc_data.get("is_lootbox", False)
-                
+
                 if not is_lootbox:
                     req_pickaxe = loc_data["required_pickaxe"]
                     if req_pickaxe not in owned_pickaxes:
@@ -478,7 +490,7 @@ async def handle_buttons(callback: types.CallbackQuery):
 
                     new_balance = balance + found_item["price"]
                     artifacts.append(found_item)
-                    
+
                     await conn.execute("UPDATE players SET balance = $1, artifacts = $2, last_mine_time = $3, total_mined = total_mined + $4 WHERE user_id = $5", 
                                        new_balance, json.dumps(artifacts), current_time, found_item["price"], user_id)
 
@@ -503,7 +515,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     mined = int(ore["reward"] * total_mult)
                     new_balance = balance + mined
                     new_total = total_mined + mined
-                    
+
                     daily_quest_progress += mined
 
                     await conn.execute("UPDATE players SET balance = $1, last_mine_time = $2, total_mined = $3, daily_quest_progress = $4 WHERE user_id = $5", 
@@ -518,7 +530,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     )
                     if current_time < boost_until:
                         text += f"⚡ *Бустер активен! Кулдаун 30 сек.*\n"
-                    
+
                     try:
                         photo = FSInputFile(ore["img"])
                         await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
@@ -527,18 +539,18 @@ async def handle_buttons(callback: types.CallbackQuery):
 
             elif action == "boosters_menu":
                 text = f"⚡ **Магазин бустеров**\n\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить временные усиления:"
-                
+
                 b1_status = "Активен!" if current_time < boost_until else "Купить за 1000"
                 b2_status = "Активен!" if current_time < double_boost_until else "Купить за 2000"
-                
+
                 buttons = [
                     [InlineKeyboardButton(text=f"⚡ Энергетик (30 сек кд) — {b1_status}", callback_data="buy_boost_1")],
                     [InlineKeyboardButton(text=f"💎 Двойная добыча — {b2_status}", callback_data="buy_boost_2")],
                     [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
                 ]
-                
+
                 await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-            
+
             elif action == "buy_boost_1":
                 if current_time < boost_until:
                     await callback.answer("У тебя уже активен этот бустер!", show_alert=True)
@@ -572,16 +584,16 @@ async def handle_buttons(callback: types.CallbackQuery):
             elif action == "status_menu":
                 text = f"👑 **Статусы**\n\nТвой текущий статус: **{current_status}**\nТвой баланс: {balance} монет\n\nЗдесь ты можешь купить статус или надеть купленный:"
                 buttons = []
-                
+
                 for status_name, price in STATUSES.items():
                     if status_name == "Новичок": continue
                     if status_name in owned_statuses:
                         buttons.append([InlineKeyboardButton(text=f"✅ Надеть {status_name}", callback_data=f"set_status_{status_name}")])
                     else:
                         buttons.append([InlineKeyboardButton(text=f"🛒 Купить {status_name} за {price}", callback_data=f"buy_status_{status_name}")])
-                        
+
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                
+
                 try:
                     photo = FSInputFile("status.jpg")
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -591,7 +603,7 @@ async def handle_buttons(callback: types.CallbackQuery):
             elif action.startswith("buy_status_"):
                 new_status = action.replace("buy_status_", "")
                 price = STATUSES.get(new_status, 0)
-                
+
                 if new_status in owned_statuses:
                     await callback.answer("У тебя уже есть этот статус!", show_alert=True)
                     return
@@ -619,18 +631,18 @@ async def handle_buttons(callback: types.CallbackQuery):
                 buttons = []
                 for loc_key, loc_data in LOCATIONS.items():
                     status = "✅ (Текущая)" if loc_key == current_location else "Перейти"
-                    
+
                     if not loc_data.get("is_lootbox"):
                         req = loc_data["required_pickaxe"]
                         if req not in owned_pickaxes:
                             status = f"🔒 Нужна {PICKAXES[req]['name']}"
                         else:
                             status = "Перейти"
-                    
+
                     buttons.append([InlineKeyboardButton(text=f"{loc_data['emoji']} {loc_data['name']} — {status}", callback_data=f"go_loc_{loc_key}")])
-                
+
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                
+
                 try:
                     current_img = LOCATIONS[current_location]['img']
                     photo = FSInputFile(current_img)
@@ -644,10 +656,10 @@ async def handle_buttons(callback: types.CallbackQuery):
                     req_pickaxe = LOCATIONS[new_loc].get("required_pickaxe")
                     if LOCATIONS[new_loc].get("is_lootbox") or req_pickaxe in owned_pickaxes:
                         await conn.execute("UPDATE players SET current_location = $1 WHERE user_id = $2", new_loc, user_id)
-                        
+
                         loc_data = LOCATIONS[new_loc]
                         text = f"📍 **Вы перешли в локацию:**\n\n{loc_data['emoji']} **{loc_data['name']}**\n\nЖми «⛏️ КОПАТЬ», чтобы начать добычу."
-                        
+
                         try:
                             photo = FSInputFile(loc_data["img"])
                             await callback.message.answer_photo(photo=photo, caption=text, reply_markup=get_game_keyboard())
@@ -661,11 +673,11 @@ async def handle_buttons(callback: types.CallbackQuery):
                 if not artifacts:
                     await callback.message.answer("🏅 Твой инвентарь артефактов пуст. Копай в Заброшенной шахте, чтобы найти что-то интересное!")
                     return
-                
+
                 text = f"🏅 **Твои артефакты ({len(artifacts)} шт.)**\n\n"
                 for item in reversed(artifacts[-20:]):
                     text += f"{item['emoji']} {item['name']} ({item['rarity']}) — {item['price']} монет\n"
-                
+
                 if len(artifacts) > 20:
                     text += f"\n*...и еще {len(artifacts) - 20} шт.*"
 
@@ -684,7 +696,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                             buttons.append([InlineKeyboardButton(text=f"🛒 Купить {p_data['name']} за {p_data['price']}", callback_data=f"buy_{p_id}")])
 
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                
+
                 try:
                     photo = FSInputFile("inv.jpg")
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -698,12 +710,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                     if p_id not in owned_pickaxes:
                         if p_data['price'] > 0:
                             buttons.append([InlineKeyboardButton(text=f"🛒 Купить {p_data['name']} за {p_data['price']}", callback_data=f"buy_{p_id}")])
-                
+
                 if not buttons:
                     text = "🛒 **Магазин кирок**\n\nТы уже купил все доступные кирки! Жди новых обновлений."
-                
+
                 buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")])
-                
+
                 try:
                     photo = FSInputFile("market.jpg")
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -739,7 +751,7 @@ async def handle_buttons(callback: types.CallbackQuery):
                     [InlineKeyboardButton(text=f"Улучшить за {cost}", callback_data="do_upgrade")],
                     [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
                 ])
-                
+
                 try:
                     photo = FSInputFile("shop.jpg")
                     await callback.message.answer_photo(photo=photo, caption=text, reply_markup=kb)
@@ -753,14 +765,14 @@ async def handle_buttons(callback: types.CallbackQuery):
                     new_balance = balance - cost
                     new_levels = update_pickaxe_level(pickaxe_levels, active_pickaxe, p_lvl + 1)
                     await conn.execute("UPDATE players SET balance = $1, pickaxe_levels = $2 WHERE user_id = $3", new_balance, new_levels, user_id)
-                    
+
                     msg = await callback.message.answer("🔨 *Тук... тук... тук...*")
                     await asyncio.sleep(0.5)
                     await msg.edit_text("⚙️ *Искры летят в разные стороны...*")
                     await asyncio.sleep(0.5)
                     await msg.edit_text("🔥 *Кирка накаляется!*")
                     await asyncio.sleep(0.5)
-                    
+
                     await msg.edit_text(f"🎉 **УСПЕХ!**\n\nТвоя кирка улучшена до **{p_lvl + 1} уровня**!\nТеперь она добывает руду еще эффективнее!", parse_mode="Markdown")
                     await callback.message.answer("Жми копать, чтобы проверить!", reply_markup=get_game_keyboard())
                 else:
@@ -781,12 +793,12 @@ async def handle_buttons(callback: types.CallbackQuery):
                 p_lvl = get_pickaxe_level(pickaxe_levels, active_pickaxe)
                 base_mult = PICKAXES[active_pickaxe]["base_mult"]
                 total_mult = base_mult + (p_lvl - 1) * 0.5
-                
+
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🎯 Забрать награду за квест", callback_data="claim_quest")],
                     [InlineKeyboardButton(text="🔙 В меню", callback_data="back_to_menu")]
                 ])
-                
+
                 quest_text = ""
                 if daily_quest_progress >= 1000:
                     quest_text = "\n🎯 **Квест выполнен!** Забери награду."
@@ -841,30 +853,30 @@ async def cmd_give_ach(message: types.Message):
         if message.from_user.id != ADMIN_ID:
             await message.reply("У тебя нет прав для этой команды.")
             return
-            
+
         args = message.text.split(maxsplit=2)
         if len(args) < 3:
             await message.reply("Используй: /give_ach @username Название достижения")
             return
-            
+
         target_username = args[1].replace("@", "").strip()
         ach_name = args[2].strip()
-        
+
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT user_id FROM players WHERE username = $1", target_username)
             if not player:
                 await message.reply(f"Игрок с ником @{target_username} не найден в базе.")
                 return
-                
+
             existing = await conn.fetchrow("SELECT 1 FROM achievements WHERE user_id = $1 AND ach_name = $2", player['user_id'], ach_name)
             if existing:
                 await message.reply(f"У игрока @{target_username} уже есть достижение «{ach_name}».")
                 return
-                
+
             await conn.execute("INSERT INTO achievements (user_id, ach_name) VALUES ($1, $2)", player['user_id'], ach_name)
-            
+
         await message.reply(f"✅ Достижение «{ach_name}» успешно выдано игроку @{target_username}!")
-        
+
     except Exception as e:
         await message.reply(f"⚠️ Ошибка при выдаче: {e}")
 
@@ -875,35 +887,35 @@ async def cmd_give_status(message: types.Message):
         if message.from_user.id != ADMIN_ID:
             await message.reply("У тебя нет прав для этой команды.")
             return
-            
+
         args = message.text.split(maxsplit=2)
         if len(args) < 3:
             await message.reply("Используй: /give_status @username Название статуса")
             return
-            
+
         target_username = args[1].replace("@", "").strip()
         status_name = args[2].strip()
-        
+
         if status_name not in STATUSES:
             await message.reply(f"Такого статуса нет. Доступные: {', '.join(STATUSES.keys())}")
             return
-        
+
         async with db_pool.acquire() as conn:
             player = await conn.fetchrow("SELECT user_id, owned_statuses FROM players WHERE username = $1", target_username)
             if not player:
                 await message.reply(f"Игрок с ником @{target_username} не найден.")
                 return
-                
+
             owned_str = player['owned_statuses'] or 'Новичок'
             if status_name in owned_str.split(','):
                 await message.reply(f"У игрока @{target_username} уже есть статус «{status_name}».")
                 return
-                
+
             new_owned = owned_str + f",{status_name}"
             await conn.execute("UPDATE players SET owned_statuses = $1 WHERE user_id = $2", new_owned, player['user_id'])
-            
+
         await message.reply(f"✅ Статус «{status_name}» успешно выдан игроку @{target_username}!")
-        
+
     except Exception as e:
         await message.reply(f"⚠️ Ошибка: {e}")
 
@@ -916,10 +928,10 @@ async def cmd_activity(message: types.Message):
             return
 
         today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-        
+
         async with db_pool.acquire() as conn:
             total_clicks = await conn.fetchval("SELECT COUNT(*) FROM activity_logs WHERE timestamp >= $1", today_start)
-            
+
             top_buttons = await conn.fetch("""
                 SELECT action, COUNT(*) as count 
                 FROM activity_logs 
@@ -927,7 +939,7 @@ async def cmd_activity(message: types.Message):
                 GROUP BY action 
                 ORDER BY count DESC LIMIT 5
             """, today_start)
-            
+
             top_users = await conn.fetch("""
                 SELECT username, COUNT(*) as count 
                 FROM activity_logs 
@@ -938,11 +950,11 @@ async def cmd_activity(message: types.Message):
 
         text = f"📈 Активность за сегодня\n\n"
         text += f"👆 Всего нажатий: {total_clicks}\n\n"
-        
+
         text += f"🔥 Топ кнопок:\n"
         for i, row in enumerate(top_buttons, 1):
             text += f"{i}. {row['action']} — {row['count']} раз\n"
-            
+
         text += f"\n🏃 Топ активных юзеров:\n"
         for i, row in enumerate(top_users, 1):
             text += f"{i}. @{row['username']} — {row['count']} нажатий\n"
